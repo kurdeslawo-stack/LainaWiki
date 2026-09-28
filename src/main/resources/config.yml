@@ -1,0 +1,6 @@
+wiki:
+  api-endpoint: "https://wiki.laina.pl/api.php"
+  public-url: "https://wiki.laina.pl/"
+  index-refresh-minutes: 360
+  article-cache-minutes: 30
+  max-article-characters: 7000
