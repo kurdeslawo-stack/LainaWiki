@@ -30,7 +30,7 @@ public final class WikiCommand implements CommandExecutor, TabCompleter {
     }
 
     private void execute(Player player, String label, String[] args) {
-        if (label.equalsIgnoreCase("wikici") && args.length == 0) {
+        if (label.substring(label.lastIndexOf(':') + 1).equalsIgnoreCase("wikici") && args.length == 0) {
             dialogs.openHeld(player);
             return;
         }

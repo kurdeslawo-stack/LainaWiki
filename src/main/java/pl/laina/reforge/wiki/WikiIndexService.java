@@ -24,16 +24,24 @@ import java.util.Map;
 import java.util.Optional;
 
 /** A cached, read-only index of pages in the Wiki's Przedmioty category. */
-public final class WikiIndexService {
+public final class WikiIndexService implements AutoCloseable {
     private static final int MAX_BATCHES = 20;
     private final LainaWikiPlugin plugin;
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
     private final Path cacheFile;
+    private final String endpoint;
+    private final java.util.concurrent.atomic.AtomicBoolean refreshing = new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile boolean closed;
+    private org.bukkit.scheduler.BukkitTask task;
     private volatile Map<String, String> titles = Map.of();
 
     public WikiIndexService(LainaWikiPlugin plugin) {
         this.plugin = plugin;
         this.cacheFile = plugin.getDataFolder().toPath().resolve("wiki-index.txt");
+        this.endpoint = plugin.getConfig().getString("wiki.api-endpoint", "https://wiki.laina.pl/api.php");
+    }
+
+    private void readSavedIndex() {
         try {
             if (Files.isRegularFile(cacheFile)) publish(Files.readAllLines(cacheFile, StandardCharsets.UTF_8));
         } catch (Exception exception) {
@@ -42,8 +50,8 @@ public final class WikiIndexService {
     }
 
     public void start() {
-        long refreshTicks = Math.max(20L * 60L, plugin.getConfig().getLong("wiki.index-refresh-minutes", 360) * 60L * 20L);
-        plugin.getServer().getScheduler().runTaskTimerAsynchronously(plugin, this::refresh, 20L, refreshTicks);
+        long refreshTicks = Math.clamp(plugin.getConfig().getLong("wiki.index-refresh-minutes", 360), 1L, 10080L) * 1200L;
+        task = plugin.getServer().getScheduler().runTaskTimerAsynchronously(plugin, this::refresh, 20L, refreshTicks);
     }
 
     public Optional<String> exact(String title) {
@@ -77,8 +85,11 @@ public final class WikiIndexService {
     }
 
     private void refresh() {
+        if (closed || !refreshing.compareAndSet(false, true)) return;
         try {
+            if (titles.isEmpty()) readSavedIndex();
             List<String> fetched = fetchAll();
+            if (closed) return;
             if (fetched.isEmpty()) throw new IllegalStateException("Wiki zwrocila pusty indeks");
             Files.createDirectories(cacheFile.getParent());
             Path temporary = cacheFile.resolveSibling(cacheFile.getFileName() + ".tmp");
@@ -87,21 +98,24 @@ public final class WikiIndexService {
             publish(fetched);
             plugin.getLogger().info("Wiki: zsynchronizowano " + titles.size() + " stron przedmiotow.");
         } catch (Exception exception) {
-            plugin.getLogger().warning("Wiki: synchronizacja nieudana, zachowano poprzedni indeks: " + exception.getMessage());
+            if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
+            if (!closed) plugin.getLogger().warning("Wiki: synchronizacja nieudana, zachowano poprzedni indeks: " + exception.getMessage());
+        } finally {
+            refreshing.set(false);
         }
     }
 
     private List<String> fetchAll() throws Exception {
-        String endpoint = plugin.getConfig().getString("wiki.api-endpoint", "https://wiki.laina.pl/api.php");
         List<String> result = new ArrayList<>();
         String continuation = null;
         for (int batch = 0; batch < MAX_BATCHES; batch++) {
+            if (closed) throw new InterruptedException("Wiki closed");
             String query = "action=query&list=categorymembers&cmtitle="
                     + URLEncoder.encode("Kategoria:Przedmioty", StandardCharsets.UTF_8)
                     + "&cmtype=page&cmlimit=500&format=xml";
             if (continuation != null) query += "&cmcontinue=" + URLEncoder.encode(continuation, StandardCharsets.UTF_8);
             HttpRequest request = HttpRequest.newBuilder(URI.create(endpoint + "?" + query))
-                    .timeout(Duration.ofSeconds(12)).header("User-Agent", "LainaReforge/0.1 WikiIndex")
+                    .timeout(Duration.ofSeconds(12)).header("User-Agent", "LainaWiki/0.1 WikiIndex")
                     .GET().build();
             HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
             if (response.statusCode() != 200) throw new IllegalStateException("Wiki HTTP " + response.statusCode());
@@ -112,6 +126,9 @@ public final class WikiIndexService {
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
             var document = factory.newDocumentBuilder().parse(new ByteArrayInputStream(response.body()));
+            if (document.getElementsByTagName("error").getLength() > 0) {
+                throw new IllegalStateException("Wiki zwróciła błąd API; zachowano pełny poprzedni indeks");
+            }
             NodeList members = document.getElementsByTagName("cm");
             for (int index = 0; index < members.getLength(); index++) {
                 Element member = (Element) members.item(index);
@@ -132,5 +149,12 @@ public final class WikiIndexService {
             if (!normalized.isBlank()) indexed.putIfAbsent(normalized, title);
         }
         titles = Collections.unmodifiableMap(indexed);
+    }
+
+    @Override
+    public void close() {
+        closed = true;
+        if (task != null) task.cancel();
+        client.shutdownNow();
     }
 }

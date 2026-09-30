@@ -1,5 +1,5 @@
 name: LainaWiki
-version: 0.1.0
+version: 0.2.0
 main: pl.laina.reforge.wiki.LainaWikiPlugin
 api-version: '26.2'
 author: slawek2131

@@ -21,10 +21,14 @@ import java.util.Optional;
 public final class WikiCatalog {
     private final Map<String, WikiEntry> byRuntimeIdentity;
     private final List<WikiEntry> entries;
+    private final Map<String, WikiEntry> byTitle;
 
     private WikiCatalog(Map<String, WikiEntry> byRuntimeIdentity, List<WikiEntry> entries) {
         this.byRuntimeIdentity = Map.copyOf(byRuntimeIdentity);
         this.entries = List.copyOf(entries);
+        Map<String, WikiEntry> indexed = new LinkedHashMap<>();
+        entries.forEach(entry -> indexed.putIfAbsent(normalize(entry.title()), entry));
+        byTitle = Map.copyOf(indexed);
     }
 
     public static WikiCatalog load(LainaWikiPlugin plugin) {
@@ -83,7 +87,7 @@ public final class WikiCatalog {
     public Optional<WikiEntry> exact(String query) {
         String needle = normalize(query);
         if (needle.isBlank()) return Optional.empty();
-        return entries.stream().filter(entry -> normalize(entry.title()).equals(needle)).findFirst();
+        return Optional.ofNullable(byTitle.get(needle));
     }
 
     public List<String> suggestions(String query, int limit) {
@@ -102,7 +106,7 @@ public final class WikiCatalog {
 
     public boolean containsTitle(String title) {
         String normalized = normalize(title);
-        return entries.stream().anyMatch(entry -> normalize(entry.title()).equals(normalized));
+        return byTitle.containsKey(normalized);
     }
 
     public List<WikiEntry> entries(WikiCategory category) {
@@ -125,6 +129,7 @@ public final class WikiCatalog {
         return decomposed.replaceAll("\\p{M}+", "")
                 .replace('_', ' ')
                 .toLowerCase(Locale.ROOT)
+                .replace('ł', 'l')
                 .replaceAll("[^a-z0-9 ]", " ")
                 .replaceAll("\\s+", " ")
                 .trim();

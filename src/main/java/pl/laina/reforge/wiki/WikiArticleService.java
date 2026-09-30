@@ -13,43 +13,50 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public final class WikiArticleService implements AutoCloseable {
     private static final Pattern INTERNAL_LINK = Pattern.compile("\\[\\[([^]\\[|]+)(?:\\|([^]\\[]+))?]]");
-    private static final Pattern EXTERNAL_LINK = Pattern.compile("\\[(https?://[^\\s]++)\\s+([^]]+)]]");
-    private final LainaWikiPlugin plugin;
+    private static final Pattern EXTERNAL_LINK = Pattern.compile("\\[(https?://[^\\s\\]]+)\\s+([^]]+)]");
+    private static final Pattern HEADING = Pattern.compile("(?m)^(={2,6})[ \\t]*(.*?)[ \\t]*\\1[ \\t]*$");
+    private final String endpoint;
+    private final String publicBase;
+    private final int maxCharacters;
     private final HttpClient client;
-    private final Map<String, CachedArticle> cache = new ConcurrentHashMap<>();
+    private final AsyncCache<WikiArticle> cache;
 
     public WikiArticleService(LainaWikiPlugin plugin) {
-        this.plugin = plugin;
+        this(plugin.getConfig().getString("wiki.api-endpoint", "https://wiki.laina.pl/api.php"),
+                plugin.getConfig().getString("wiki.public-url", "https://wiki.laina.pl/"),
+                plugin.getConfig().getInt("wiki.max-article-characters", 7000),
+                plugin.getConfig().getLong("wiki.article-cache-minutes", 30),
+                plugin.getConfig().getInt("wiki.article-cache-capacity", 256));
+    }
+
+    WikiArticleService(String endpoint, String publicBase, int maxCharacters, long cacheMinutes, int capacity) {
+        this.endpoint = endpoint;
+        this.publicBase = publicBase;
+        this.maxCharacters = Math.clamp(maxCharacters, 500, 50000);
         this.client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+        long minutes = Math.clamp(cacheMinutes, 1L, 1440L);
+        cache = new AsyncCache<>(this::fetchRemote, Duration.ofMinutes(minutes).toMillis(),
+                Math.clamp(capacity, 1, 2000),
+                System::currentTimeMillis);
     }
 
-    public Optional<WikiArticle> cached(String title) {
-        CachedArticle cached = cache.get(title);
-        return cached != null && cached.validUntil().isAfter(Instant.now())
-                ? Optional.of(cached.article()) : Optional.empty();
+    public java.util.concurrent.CompletableFuture<AsyncCache.Result<WikiArticle>> load(String title) {
+        return cache.load(title.strip().replace('_', ' '));
     }
 
-    public WikiArticle fetch(String requestedTitle) throws Exception {
-        Optional<WikiArticle> cached = cached(requestedTitle);
-        if (cached.isPresent()) return cached.get();
-
-        String endpoint = plugin.getConfig().getString("wiki.api-endpoint", "https://wiki.laina.pl/api.php");
+    private WikiArticle fetchRemote(String requestedTitle) throws Exception {
         String query = "action=parse&prop=wikitext&format=xml&page="
                 + URLEncoder.encode(requestedTitle, StandardCharsets.UTF_8);
         HttpRequest request = HttpRequest.newBuilder(URI.create(endpoint + "?" + query))
                 .timeout(Duration.ofSeconds(10))
-                .header("User-Agent", "LainaReforge/0.1 WikiDialog")
+                .header("User-Agent", "LainaWiki/0.1 WikiDialog")
                 .GET().build();
         HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
         if (response.statusCode() != 200) {
@@ -76,28 +83,47 @@ public final class WikiArticleService implements AutoCloseable {
         String wikiText = wikiTexts.getLength() == 0 ? "" : wikiTexts.item(0).getTextContent();
         String text = wikiTexts.getLength() == 0
                 ? "Brak opisu w artykule."
-                : toPlainText(wikiText);
-        int max = plugin.getConfig().getInt("wiki.max-article-characters", 7000);
+                : toDialogText(wikiText);
+        int max = maxCharacters;
         if (text.length() > max) text = text.substring(0, max).stripTrailing() + "\n\n…Dalsza część znajduje się na stronie Wiki.";
-        String publicBase = plugin.getConfig().getString("wiki.public-url", "https://wiki.laina.pl/");
-        WikiArticle article = new WikiArticle(title, text, extractLinks(wikiText, publicBase));
-        long minutes = Math.max(1, plugin.getConfig().getLong("wiki.article-cache-minutes", 30));
-        cache.put(requestedTitle, new CachedArticle(article, Instant.now().plus(Duration.ofMinutes(minutes))));
+        Section acquisition = acquisitionSection(wikiText);
+        String acquisitionText = acquisition.end > acquisition.start
+                ? toDialogText(wikiText.substring(acquisition.start, acquisition.end)) : "";
+        if (acquisitionText.length() > max) acquisitionText = acquisitionText.substring(0, max)
+                + "\n\n…Pełny opis znajduje się na Wiki.";
+        WikiArticle article = new WikiArticle(title, text, extractLinks(wikiText, publicBase), acquisitionText);
         return article;
     }
 
     @Override
     public void close() {
-        cache.clear();
+        cache.close();
+        client.shutdownNow();
     }
 
-    public record WikiArticle(String title, String text, List<WikiLink> links) {}
-    public record WikiLink(String label, String url) {}
-    private record CachedArticle(WikiArticle article, Instant validUntil) {}
+    public record WikiArticle(String title, String text, List<WikiLink> links, String acquisitionText) {}
+    public record WikiLink(String label, String url, String targetTitle, boolean acquisition) {}
+    private record Section(int start, int end) {}
+
+    private static Section acquisitionSection(String text) {
+        Matcher headings = HEADING.matcher(text);
+        int start = -1;
+        int depth = 0;
+        while (headings.find()) {
+            if (start >= 0 && headings.group(1).length() <= depth) return new Section(start, headings.start());
+            String name = WikiCatalog.normalize(headings.group(2));
+            if (start < 0 && List.of("jak zdobyc", "pozyskiwanie", "zdobywanie", "receptura", "crafting", "wytwarzanie").contains(name)) {
+                start = headings.end();
+                depth = headings.group(1).length();
+            }
+        }
+        return start < 0 ? new Section(0, 0) : new Section(start, text.length());
+    }
 
     static List<WikiLink> extractLinks(String wikiText, String publicBase) {
         if (wikiText == null || wikiText.isBlank()) return List.of();
         List<WikiLink> links = new ArrayList<>();
+        Section acquisition = acquisitionSection(wikiText);
         Matcher internal = INTERNAL_LINK.matcher(wikiText);
         while (internal.find()) {
             String target = internal.group(1).strip();
@@ -106,29 +132,56 @@ public final class WikiArticleService implements AutoCloseable {
                     || namespace.startsWith("kategoria:") || namespace.startsWith("category:")) continue;
             String label = internal.group(2) == null ? target : internal.group(2).strip();
             String page = target.split("#", 2)[0].strip();
-            if (!label.isBlank() && !page.isBlank()) links.add(new WikiLink(label, WikiUrls.article(publicBase, page)));
+            if (!label.isBlank() && !page.isBlank()) links.add(new WikiLink(label, WikiUrls.article(publicBase, page), page,
+                    internal.start() >= acquisition.start && internal.start() < acquisition.end));
         }
         Matcher external = EXTERNAL_LINK.matcher(wikiText);
         while (external.find()) {
             String label = external.group(2).strip();
-            if (!label.isBlank()) links.add(new WikiLink(label, external.group(1)));
+            if (!label.isBlank()) links.add(new WikiLink(label, external.group(1), null,
+                    external.start() >= acquisition.start && external.start() < acquisition.end));
         }
         return List.copyOf(links);
     }
 
     static String toPlainText(String wikiText) {
+        return cleanText(wikiText, false);
+    }
+
+    static String toDialogText(String wikiText) {
+        return cleanText(wikiText, true);
+    }
+
+    static int headingLevel(String line) {
+        Matcher heading = HEADING.matcher(line.strip());
+        return heading.matches() ? heading.group(1).length() : 0;
+    }
+
+    static String headingLabel(String line) {
+        Matcher heading = HEADING.matcher(line.strip());
+        return heading.matches() ? heading.group(2).strip() : line;
+    }
+
+    private static String cleanText(String wikiText, boolean keepHeadings) {
         String text = wikiText == null ? "" : wikiText;
+        text = text.replace("\r\n", "\n").replace('\r', '\n');
         text = text.replaceAll("(?is)\\[\\[(?:Plik|File):[^]]+]]", "");
         text = text.replaceAll("(?is)\\[\\[(?:Kategoria|Category):[^]]+]]", "");
-        text = text.replaceAll("(?i)\\[https?://[^\\s]++\\s+([^]]+)]]", "$1");
+        text = EXTERNAL_LINK.matcher(text).replaceAll("$2");
         text = text.replaceAll("(?is)\\[\\[[^]|]+\\|([^]]+)]]", "$1");
         text = text.replaceAll("(?is)\\[\\[([^]]+)]]", "$1");
         text = text.replaceAll("(?i)<br\\s*/?>", "\n");
         text = text.replaceAll("(?is)</?(?:big|small|code|span|div|center|nowiki)[^>]*>", "");
-        text = text.replaceAll("(?m)^\\s*=+\\s*(.*?)\\s*=+\\s*$", "$1");
+        if (keepHeadings) {
+            // Some articles use standalone bold labels instead of MediaWiki headings.
+            text = text.replaceAll("(?m)^[ \\t]*'''([^'\\n]+)'''[ \\t]*$", "== $1 ==");
+            text = HEADING.matcher(text).replaceAll("\n\n$1 $2 $1\n\n");
+        } else {
+            text = HEADING.matcher(text).replaceAll("$2");
+        }
         text = text.replace("'''", "").replace("''", "");
         text = text.replaceAll("(?is)\\{\\{.*?}}", "");
-        text = text.replaceAll("(?m)^\\s*\\*\\s*", "• ");
+        text = text.replaceAll("(?m)^[ \\t]*\\*+[ \\t]*", "• ");
         text = text.replaceAll("(?m)[ \\t]+$", "");
         text = text.replaceAll("\\n{3,}", "\n\n").trim();
         return text.isBlank() ? "Brak opisu w artykule." : text;

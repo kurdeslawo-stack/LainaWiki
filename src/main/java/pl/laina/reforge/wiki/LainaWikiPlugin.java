@@ -6,6 +6,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 public final class LainaWikiPlugin extends JavaPlugin {
 
     private WikiArticleService articleService;
+    private WikiIndexService index;
+    private WikiFavorites favorites;
 
     @Override
     public void onEnable() {
@@ -13,8 +15,10 @@ public final class LainaWikiPlugin extends JavaPlugin {
 
         WikiCatalog catalog = WikiCatalog.load(this);
         articleService = new WikiArticleService(this);
-        WikiIndexService index = new WikiIndexService(this);
-        WikiDialogService dialogs = new WikiDialogService(this, catalog, articleService, index);
+        index = new WikiIndexService(this);
+        favorites = new WikiFavorites(getDataFolder().toPath().resolve("favorites"));
+        WikiDialogService dialogs = new WikiDialogService(this, catalog, articleService, index, favorites);
+        getServer().getPluginManager().registerEvents(dialogs, this);
 
         PluginCommand command = getCommand("wiki");
         if (command == null) {
@@ -31,8 +35,10 @@ public final class LainaWikiPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (index != null) index.close();
         if (articleService != null) {
             articleService.close();
         }
+        if (favorites != null) favorites.close();
     }
 }

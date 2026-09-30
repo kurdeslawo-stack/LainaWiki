@@ -8,8 +8,77 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class WikiTextTest {
     @Test
+    void layoutSeparatesListsWithoutLosingHeadingsOrLinks() {
+        String text = "Wstęp.\n\n== Zaklęcia ==\n\n• Wydajność 6\n• Szczęście 4\n"
+                + "Dalszy opis.\n\n== Jak zdobyć? ==\n\n• Z Klucza Diamentowego.";
+        assertEquals(java.util.List.of("Wstęp.", "== Zaklęcia ==", "• Wydajność 6\n• Szczęście 4",
+                "Dalszy opis.", "== Jak zdobyć? ==", "• Z Klucza Diamentowego."),
+                WikiDialogService.articleBlocks(text));
+    }
+
+    @Test
+    void dialogPreservesHeadingHierarchyAndSeparatesSections() {
+        String result = WikiArticleService.toDialogText("Wstęp.\r\n== Opis ==\r\nTreść.\r\n"
+                + "=== Zaklęcia ===\r\n* Wydajność 6\r\n* Szczęście 4");
+        assertEquals("Wstęp.\n\n== Opis ==\n\nTreść.\n\n=== Zaklęcia ===\n\n• Wydajność 6\n• Szczęście 4", result);
+        assertEquals(2, WikiArticleService.headingLevel("== Opis =="));
+        assertEquals(3, WikiArticleService.headingLevel("=== Zaklęcia ==="));
+        assertEquals("Zaklęcia", WikiArticleService.headingLabel("=== Zaklęcia ==="));
+        assertEquals(0, WikiArticleService.headingLevel("Krótki zwykły akapit"));
+    }
+
+    @Test
+    void standaloneBoldLabelsBecomeHeadingsButInlineEmphasisDoesNot() {
+        assertEquals("== Opis ==\n\nTekst z mocnym słowem.",
+                WikiArticleService.toDialogText("'''Opis'''<br/>Tekst z '''mocnym''' słowem."));
+    }
+
+    @Test
+    void paginationMovesOrphanHeadingToNextPage() {
+        var pages = WikiDialogService.articlePages("Wstęp do przedmiotu.\n\n== Opis ==\n\nDalsza treść opisu przedmiotu.", 40);
+        assertEquals("Wstęp do przedmiotu.", pages.getFirst());
+        assertTrue(pages.get(1).startsWith("== Opis ==\n\nDalsza"));
+        assertTrue(pages.stream().allMatch(page -> page.length() <= 40));
+    }
+
+    @Test
+    void acquisitionLinksComeOnlyFromTheRelevantSectionIncludingSubsections() {
+        String markup = "== Opis ==\nPodobny do [[Inny miecz]].\n"
+                + "== Jak zdobyć? ==\nPokonaj [[Smok Endu|Smoka]].\n"
+                + "=== Składniki ===\nUżyj [[Diament]].\n"
+                + "== Autorzy ==\n[[Autor]].";
+        var links = WikiArticleService.extractLinks(markup, "https://wiki.laina.pl/");
+        assertEquals(4, links.size());
+        assertFalse(links.get(0).acquisition());
+        assertTrue(links.get(1).acquisition());
+        assertEquals("Smok Endu", links.get(1).targetTitle());
+        assertEquals("Smoka", links.get(1).label());
+        assertTrue(links.get(2).acquisition());
+        assertFalse(links.get(3).acquisition());
+    }
+
+    @Test
+    void externalLinksStayExternalAndDescriptionsDoNotInventAcquisitionPaths() {
+        var links = WikiArticleService.extractLinks("Opis [[Smok]] i [https://laina.pl sklep].", "https://wiki.laina.pl/");
+        assertFalse(links.get(0).acquisition());
+        assertFalse(links.get(1).acquisition());
+        assertEquals(null, links.get(1).targetTitle());
+    }
+    @Test
     void normalizesPolishNamesAndWikiSeparators() {
         assertEquals("uwieziony excalibur", WikiCatalog.normalize("Uwięziony_Excalibur"));
+        assertEquals("krysztal empirii", WikiCatalog.normalize("Kryształ_Empirii"));
+        assertEquals("lucznictwo", WikiCatalog.normalize("ŁUCZNICTWO"));
+    }
+
+    @Test
+    void externalLinksUseOneClosingBracketAndPreserveFollowingText() {
+        String markup = "Kup [https://laina.pl/sklep?x=1&y=2 w sklepie]. Dalej.";
+        assertEquals("Kup w sklepie. Dalej.", WikiArticleService.toPlainText(markup));
+        var links = WikiArticleService.extractLinks(markup, "https://wiki.laina.pl/");
+        assertEquals(1, links.size());
+        assertEquals("w sklepie", links.getFirst().label());
+        assertEquals("https://laina.pl/sklep?x=1&y=2", links.getFirst().url());
     }
 
     @Test

@@ -27,9 +27,10 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
-public final class WikiDialogService {
+public final class WikiDialogService implements org.bukkit.event.Listener {
     private static final int CONTENT_WIDTH = 360;
-    private static final int ICON_SIZE = 24;
+    // Native dialog items render at 16px; width/height only reserve layout space.
+    private static final int ICON_SIZE = 16;
     private static final int PAGE_SIZE = 6;
     private static final int ARTICLE_PAGE_LENGTH = 1250;
 
@@ -37,17 +38,33 @@ public final class WikiDialogService {
     private final WikiCatalog catalog;
     private final WikiArticleService articles;
     private final WikiIndexService index;
+    private final WikiFavorites favorites;
+    private final Map<UUID, List<String>> favoriteTitles = new ConcurrentHashMap<>();
+    private final Map<UUID, Deque<String>> trails = new ConcurrentHashMap<>();
+    private record LoadedArticle(AsyncCache.Result<WikiArticleService.WikiArticle> article, List<String> favorites) {}
     private final Map<UUID, Deque<WikiEntry>> recent = new ConcurrentHashMap<>();
+    private final Map<UUID, UUID> requests = new ConcurrentHashMap<>();
+
+    @org.bukkit.event.EventHandler
+    public void onQuit(org.bukkit.event.player.PlayerQuitEvent event) {
+        requests.remove(event.getPlayer().getUniqueId());
+        recent.remove(event.getPlayer().getUniqueId());
+        favoriteTitles.remove(event.getPlayer().getUniqueId());
+        trails.remove(event.getPlayer().getUniqueId());
+    }
 
     public WikiDialogService(LainaWikiPlugin plugin, WikiCatalog catalog,
-                             WikiArticleService articles, WikiIndexService index) {
+                             WikiArticleService articles, WikiIndexService index, WikiFavorites favorites) {
         this.plugin = plugin;
         this.catalog = catalog;
         this.articles = articles;
         this.index = index;
+        this.favorites = favorites;
     }
 
     public void showHome(Player player) {
+        requests.remove(player.getUniqueId());
+        trails.remove(player.getUniqueId());
         ActionButton search = ActionButton.builder(Component.text("Szukaj przedmiotu", NamedTextColor.GOLD, TextDecoration.BOLD))
                 .tooltip(Component.text("Wyszukaj przedmiot w Księdze Lainy"))
                 .width(170)
@@ -63,6 +80,8 @@ public final class WikiDialogService {
         actions.add(action("Przedmiot w ręce", "Otwórz kartę trzymanego przedmiotu", NamedTextColor.AQUA, this::openHeld));
         actions.add(action("Przeglądaj działy", "Broń, pancerze, narzędzia i inne", NamedTextColor.AQUA, this::showCategories));
         actions.add(action("Losowa karta", "Otwórz niespodziewaną kartę z księgi", NamedTextColor.LIGHT_PURPLE, this::openRandom));
+        actions.add(action("★ Ulubione", "Twoja zapisana lista przedmiotów do zdobycia", NamedTextColor.GOLD,
+                target -> loadFavorites(target, 0)));
         if (!recent.getOrDefault(player.getUniqueId(), new ArrayDeque<>()).isEmpty()) {
             actions.add(action("Ostatnio oglądane", "Wróć do niedawno otwartych kart", NamedTextColor.GRAY, this::showHistory));
         }
@@ -131,8 +150,58 @@ public final class WikiDialogService {
     }
 
     private void openWikiTitle(Player player, String title) {
-        WikiEntry entry = WikiEntry.wikiOnly(title);
+        WikiEntry entry = catalog.exact(title).orElseGet(() -> WikiEntry.wikiOnly(title));
         openEntry(player, entry, entry.createIcon());
+    }
+
+    private void navigate(Player player, String from, String title) {
+        if (!WikiFavorites.sameTitle(from, title)) {
+            Deque<String> trail = trails.computeIfAbsent(player.getUniqueId(), ignored -> new ArrayDeque<>());
+            trail.addFirst(from);
+            while (trail.size() > 20) trail.removeLast();
+        }
+        openWikiTitle(player, title);
+    }
+
+    private <T> void storageAction(Player player, java.util.concurrent.CompletableFuture<T> operation, Consumer<T> success) {
+        UUID id = player.getUniqueId();
+        UUID request = UUID.randomUUID();
+        requests.put(id, request);
+        operation.whenComplete((value, failure) -> {
+            if (!plugin.isEnabled()) return;
+            try {
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline() || !requests.remove(id, request)) return;
+                    if (failure == null) success.accept(value);
+                    else {
+                        plugin.getLogger().warning("Ulubione: " + failure);
+                        showError(player, "Ulubione chwilowo niedostępne", "Nie udało się odczytać lub zapisać listy. Spróbuj ponownie.");
+                    }
+                });
+            } catch (org.bukkit.plugin.IllegalPluginAccessException ignored) { }
+        });
+    }
+
+    private void loadFavorites(Player player, int page) {
+        storageAction(player, favorites.list(player.getUniqueId()), titles -> {
+            favoriteTitles.put(player.getUniqueId(), titles);
+            showFavorites(player, titles, page);
+        });
+    }
+
+    private void showFavorites(Player player, List<String> titles, int requestedPage) {
+        int lastPage = Math.max(0, (titles.size() - 1) / PAGE_SIZE);
+        int page = Math.clamp(requestedPage, 0, lastPage);
+        List<ActionButton> actions = new ArrayList<>();
+        titles.stream().skip((long) page * PAGE_SIZE).limit(PAGE_SIZE).forEach(title ->
+                actions.add(action(shortLabel(title), title, target -> openWikiTitle(target, title))));
+        if (page > 0) actions.add(action("← Poprzednia", "Poprzednia strona", target -> loadFavorites(target, page - 1)));
+        if (page < lastPage) actions.add(action("Następna →", "Następna strona", target -> loadFavorites(target, page + 1)));
+        actions.add(action("← Do księgi", "Wróć do wyszukiwarki", NamedTextColor.GRAY, this::showHome));
+        showMenu(player, "★ Ulubione", Component.text(titles.isEmpty()
+                ? "Twoja lista jest pusta. Otwórz kartę i wybierz ★ Dodaj do ulubionych."
+                : titles.size() + "/" + WikiFavorites.LIMIT + " zapisanych kart • strona " + (page + 1) + "/" + (lastPage + 1),
+                NamedTextColor.GOLD), actions);
     }
 
     public void showCategory(Player player, WikiCategory category, int requestedPage) {
@@ -217,45 +286,89 @@ public final class WikiDialogService {
     }
 
     private void openEntry(Player player, WikiEntry entry, ItemStack icon) {
-        var cached = articles.cached(entry.title());
-        if (cached.isPresent()) {
-            showArticle(player, entry, icon, cached.get(), 0);
-            return;
-        }
+        UUID request = UUID.randomUUID();
+        UUID playerId = player.getUniqueId();
+        requests.put(playerId, request);
         player.sendActionBar(Component.text("Ładowanie artykułu „" + entry.title() + "”…", NamedTextColor.AQUA));
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+        var saved = favorites.list(playerId).exceptionally(failure -> {
+            plugin.getLogger().warning("Odczyt ulubionych: " + failure);
+            return List.of();
+        });
+        articles.load(entry.title()).thenCombine(saved, LoadedArticle::new).whenComplete((loaded, failure) -> {
+            if (!plugin.isEnabled()) return;
             try {
-                WikiArticleService.WikiArticle article = articles.fetch(entry.title());
                 plugin.getServer().getScheduler().runTask(plugin, () -> {
-                    if (player.isOnline()) showArticle(player, entry, icon, article, 0);
+                    if (!player.isOnline() || !requests.remove(playerId, request)) return;
+                    if (failure == null) {
+                        var result = loaded.article();
+                        favoriteTitles.put(playerId, loaded.favorites());
+                        showArticle(player, entry, icon, result.value(), 0);
+                        if (result.stale()) player.sendMessage(Component.text(
+                                "Wiki jest niedostępna. Pokazuję wcześniej zapisaną wersję opisu.", NamedTextColor.YELLOW));
+                    } else {
+                        plugin.getLogger().warning("Wiki: " + entry.title() + ": " + failure);
+                        showError(player, "Nie udało się pobrać artykułu",
+                                "Wiki chwilowo nie odpowiada lub jest zbyt wiele zapytań. Spróbuj ponownie za chwilę.");
+                    }
                 });
-            } catch (Exception exception) {
-                plugin.getLogger().warning("Wiki: " + entry.title() + ": " + exception.getMessage());
-                plugin.getServer().getScheduler().runTask(plugin, () -> {
-                    if (player.isOnline()) showError(player, "Nie udało się pobrać artykułu", exception.getMessage());
-                });
+            } catch (org.bukkit.plugin.IllegalPluginAccessException ignored) {
+                // The server disabled this plugin while the HTTP request was completing.
             }
         });
     }
 
     private void showArticle(Player player, WikiEntry entry, ItemStack icon,
                              WikiArticleService.WikiArticle article, int requestedPage) {
+        showArticle(player, entry, icon, article, requestedPage, false);
+    }
+
+    private void showArticle(Player player, WikiEntry entry, ItemStack icon,
+                             WikiArticleService.WikiArticle article, int requestedPage, boolean acquisitionOnly) {
+        requests.remove(player.getUniqueId());
         remember(player, entry);
-        List<String> pages = articlePages(article.text(), ARTICLE_PAGE_LENGTH);
+        List<String> pages = articlePages(acquisitionOnly ? article.acquisitionText() : article.text(), ARTICLE_PAGE_LENGTH);
         int page = Math.clamp(requestedPage, 0, pages.size() - 1);
         List<DialogBody> body = new ArrayList<>();
-        body.add(DialogBody.plainMessage(articleIntro(article, page + 1, pages.size()), CONTENT_WIDTH));
         body.add(DialogBody.item(icon).showDecorations(false).showTooltip(true)
-                .width(ICON_SIZE).height(ICON_SIZE).build());
-        body.add(DialogBody.plainMessage(articleBody(pages.get(page), article.links()), CONTENT_WIDTH));
+                .width(ICON_SIZE).height(ICON_SIZE)
+                .description(DialogBody.plainMessage(articleIntro(page + 1, pages.size()), CONTENT_WIDTH - ICON_SIZE - 2))
+                .build());
+        if (acquisitionOnly) body.add(DialogBody.plainMessage(Component.text("JAK ZDOBYĆ? • według Wiki", NamedTextColor.GOLD), CONTENT_WIDTH));
+        for (String block : articleBlocks(pages.get(page))) {
+            Component contents = articleBody(block, article.links(), article.title());
+            // Native dialog item bodies reject AIR; text blocks must remain plain messages.
+            body.add(DialogBody.plainMessage(contents, CONTENT_WIDTH));
+        }
         String url = articleUrl(article.title());
         ActionButton back = button("Wróć", "Wróć do wyszukiwarki", ClickEvent.runCommand("/wiki"));
         ActionButton web = button("Pełny artykuł", url, ClickEvent.openUrl(url));
         List<ActionButton> actions = new ArrayList<>();
         if (page > 0) actions.add(action("← Poprzednia", "Poprzednia strona opisu", NamedTextColor.GRAY,
-                target -> showArticle(target, entry, icon, article, page - 1)));
+                target -> showArticle(target, entry, icon, article, page - 1, acquisitionOnly)));
         if (page < pages.size() - 1) actions.add(action("Czytaj dalej →", "Następna strona opisu", NamedTextColor.GOLD,
-                target -> showArticle(target, entry, icon, article, page + 1)));
+                target -> showArticle(target, entry, icon, article, page + 1, acquisitionOnly)));
+        boolean favorite = favoriteTitles.getOrDefault(player.getUniqueId(), List.of()).stream()
+                .anyMatch(title -> WikiFavorites.sameTitle(title, article.title()));
+        actions.add(action(favorite ? "★ Usuń z ulubionych" : "★ Dodaj do ulubionych", "Zapisz przedmiot na swojej liście celów", NamedTextColor.GOLD,
+                target -> storageAction(target, favorites.toggle(target.getUniqueId(), article.title()), change -> {
+                    if (change == WikiFavorites.Change.LIMIT_REACHED) target.sendMessage(Component.text(
+                            "Lista mieści maksymalnie " + WikiFavorites.LIMIT + " kart. Usuń jedną, aby dodać kolejną.", NamedTextColor.YELLOW));
+                    storageAction(target, favorites.list(target.getUniqueId()), titles -> {
+                        favoriteTitles.put(target.getUniqueId(), titles);
+                        showArticle(target, entry, icon, article, page, acquisitionOnly);
+                    });
+                })));
+        if (!article.acquisitionText().isBlank()) actions.add(action(acquisitionOnly ? "← Pełny opis" : "Jak zdobyć?",
+                "Informacje o zdobywaniu podane w artykule", NamedTextColor.AQUA,
+                target -> showArticle(target, entry, icon, article, 0, !acquisitionOnly)));
+        if (!article.links().isEmpty()) actions.add(action("Powiązane artykuły", "Przejdź do źródeł, bossów i składników wymienionych na Wiki",
+                target -> showRelations(target, entry, icon, article, acquisitionOnly, 0)));
+        if (!trails.getOrDefault(player.getUniqueId(), new ArrayDeque<>()).isEmpty()) actions.add(action("← Poprzednia karta",
+                "Wróć do artykułu, z którego tu przyszedłeś", NamedTextColor.GRAY, target -> {
+                    Deque<String> trail = trails.get(target.getUniqueId());
+                    if (trail != null && !trail.isEmpty()) openWikiTitle(target, trail.removeFirst());
+                    else showHome(target);
+                }));
         actions.add(back);
         actions.add(web);
         Dialog dialog = Dialog.create(factory -> factory.empty()
@@ -268,7 +381,30 @@ public final class WikiDialogService {
         player.showDialog(dialog);
     }
 
+    private void showRelations(Player player, WikiEntry entry, ItemStack icon, WikiArticleService.WikiArticle article,
+                               boolean acquisitionOnly, int requestedPage) {
+        Map<String, WikiArticleService.WikiLink> distinct = new java.util.LinkedHashMap<>();
+        article.links().stream().filter(link -> !acquisitionOnly || link.acquisition())
+                .forEach(link -> distinct.putIfAbsent(link.url(), link));
+        List<WikiArticleService.WikiLink> links = List.copyOf(distinct.values());
+        int lastPage = Math.max(0, (links.size() - 1) / PAGE_SIZE);
+        int page = Math.clamp(requestedPage, 0, lastPage);
+        List<ActionButton> actions = new ArrayList<>();
+        links.stream().skip((long) page * PAGE_SIZE).limit(PAGE_SIZE).forEach(link -> {
+            if (link.targetTitle() != null) actions.add(action(shortLabel(link.targetTitle()), link.label(),
+                    target -> navigate(target, article.title(), link.targetTitle())));
+            else actions.add(button(shortLabel(link.label()) + " ↗", "Otwórz stronę: " + link.url(), ClickEvent.openUrl(link.url())));
+        });
+        if (page > 0) actions.add(action("← Poprzednia", "Poprzednia strona", target -> showRelations(target, entry, icon, article, acquisitionOnly, page - 1)));
+        if (page < lastPage) actions.add(action("Następna →", "Następna strona", target -> showRelations(target, entry, icon, article, acquisitionOnly, page + 1)));
+        actions.add(action("← Do opisu", "Wróć do karty", target -> showArticle(target, entry, icon, article, 0, acquisitionOnly)));
+        showMenu(player, "Powiązania z Wiki", Component.text(article.title() + "\n"
+                + (links.isEmpty() ? "Wiki nie podaje tu linków do innych stron." : links.size() + " odnośników • strona " + (page + 1) + "/" + (lastPage + 1)),
+                NamedTextColor.GOLD), actions);
+    }
+
     private void showError(Player player, String title, String message) {
+        requests.remove(player.getUniqueId());
         ActionButton back = button("Wróć", "Wróć do wyszukiwarki", ClickEvent.runCommand("/wiki"));
         Dialog dialog = Dialog.create(factory -> factory.empty()
                 .base(DialogBase.builder(Component.text(title, NamedTextColor.RED))
@@ -308,6 +444,7 @@ public final class WikiDialogService {
     }
 
     private void showMenu(Player player, String title, Component intro, List<ActionButton> actions) {
+        requests.remove(player.getUniqueId());
         Dialog dialog = Dialog.create(factory -> factory.empty()
                 .base(DialogBase.builder(Component.text(title, NamedTextColor.AQUA, TextDecoration.BOLD))
                         .externalTitle(Component.text(title)).canCloseWithEscape(true).pause(false)
@@ -335,13 +472,33 @@ public final class WikiDialogService {
                 .append(Component.text("\nWyszukaj item lub wybierz ścieżkę poniżej.", NamedTextColor.GRAY));
     }
 
-    private Component articleIntro(WikiArticleService.WikiArticle article, int page, int totalPages) {
+    private Component articleIntro(int page, int totalPages) {
         return Component.text("KARTA PRZEDMIOTU", NamedTextColor.AQUA, TextDecoration.BOLD)
-                .append(Component.text("\n" + article.title(), NamedTextColor.GOLD))
                 .append(Component.text("\nOpis z Wiki Laina.pl  •  " + page + "/" + totalPages, NamedTextColor.GRAY));
     }
 
-    private Component articleBody(String text, List<WikiArticleService.WikiLink> links) {
+    static List<String> articleBlocks(String text) {
+        List<String> blocks = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean list = false;
+        for (String line : text.split("\n", -1)) {
+            boolean nextList = line.startsWith("• ");
+            if (line.isBlank() || (!current.isEmpty() && nextList != list)) {
+                if (!current.isEmpty()) {
+                    blocks.add(current.toString());
+                    current.setLength(0);
+                }
+                if (line.isBlank()) continue;
+            }
+            if (!current.isEmpty()) current.append('\n');
+            current.append(line);
+            list = nextList;
+        }
+        if (!current.isEmpty()) blocks.add(current.toString());
+        return blocks;
+    }
+
+    private Component articleBody(String text, List<WikiArticleService.WikiLink> links, String sourceTitle) {
         Component result = Component.empty();
         String[] lines = text.split("\n", -1);
         for (int index = 0; index < lines.length; index++) {
@@ -349,17 +506,19 @@ public final class WikiDialogService {
             String line = lines[index];
             if (line.startsWith("• ")) {
                 result = result.append(Component.text("• ", NamedTextColor.AQUA))
-                        .append(linkedText(line.substring(2), links));
-            } else if (isHeading(lines, index)) {
-                result = result.append(Component.text(line, NamedTextColor.GOLD, TextDecoration.BOLD));
+                        .append(linkedText(line.substring(2), links, sourceTitle));
+            } else if (WikiArticleService.headingLevel(line) > 0) {
+                result = result.append(Component.text(WikiArticleService.headingLabel(line),
+                        WikiArticleService.headingLevel(line) == 2 ? NamedTextColor.GOLD : NamedTextColor.AQUA,
+                        TextDecoration.BOLD));
             } else {
-                result = result.append(linkedText(line, links));
+                result = result.append(linkedText(line, links, sourceTitle));
             }
         }
         return result;
     }
 
-    private Component linkedText(String line, List<WikiArticleService.WikiLink> links) {
+    private Component linkedText(String line, List<WikiArticleService.WikiLink> links, String sourceTitle) {
         Component result = Component.empty();
         int cursor = 0;
         while (cursor < line.length()) {
@@ -378,17 +537,21 @@ public final class WikiDialogService {
             }
             if (next > cursor) result = result.append(Component.text(line.substring(cursor, next), NamedTextColor.WHITE));
             result = result.append(Component.text(selected.label(), NamedTextColor.AQUA, TextDecoration.UNDERLINED)
-                    .clickEvent(ClickEvent.openUrl(selected.url())));
+                    .clickEvent(selected.targetTitle() == null ? ClickEvent.openUrl(selected.url())
+                            : internalLink(sourceTitle, selected.targetTitle())));
             cursor = next + selected.label().length();
         }
         return result;
     }
 
-    private boolean isHeading(String[] lines, int index) {
-        String line = lines[index].strip();
-        return !line.isEmpty() && line.length() < 45 && !line.endsWith(".") && !line.endsWith(":")
-                && (index == 0 || lines[index - 1].isBlank())
-                && index + 1 < lines.length && !lines[index + 1].isBlank();
+    private ClickEvent internalLink(String sourceTitle, String targetTitle) {
+        return ClickEvent.callback(audience -> {
+            if (audience instanceof Player target && plugin.isEnabled()) {
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    if (target.isOnline()) navigate(target, sourceTitle, targetTitle);
+                });
+            }
+        }, ClickCallback.Options.builder().uses(1).lifetime(Duration.ofMinutes(5)).build());
     }
 
     static List<String> articlePages(String text, int maxLength) {
@@ -400,6 +563,12 @@ public final class WikiDialogService {
             int split = remaining.lastIndexOf('\n', maxLength);
             if (split < maxLength / 2) split = remaining.lastIndexOf(' ', maxLength);
             if (split < maxLength / 2) split = maxLength;
+            // Keep a section title with its content instead of orphaning it at the page bottom.
+            String candidate = remaining.substring(0, split).stripTrailing();
+            int lastLine = candidate.lastIndexOf('\n') + 1;
+            if (lastLine > 0 && WikiArticleService.headingLevel(candidate.substring(lastLine)) > 0) {
+                split = lastLine;
+            }
             pages.add(remaining.substring(0, split).strip());
             remaining = remaining.substring(split).strip();
         }
