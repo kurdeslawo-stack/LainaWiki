@@ -8,6 +8,49 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class WikiTextTest {
     @Test
+    void interactiveButtonsDoNotLookDisabledOrMissing() {
+        var aqua = net.kyori.adventure.text.format.NamedTextColor.AQUA;
+        var gold = net.kyori.adventure.text.format.NamedTextColor.GOLD;
+        assertEquals(aqua, WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.GRAY));
+        assertEquals(aqua, WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.DARK_GRAY));
+        assertEquals(aqua, WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.BLUE));
+        assertEquals(aqua, WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.DARK_BLUE));
+        assertEquals(gold, WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.RED));
+        assertEquals(gold, WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.DARK_RED));
+        for (var color : java.util.List.of(net.kyori.adventure.text.format.NamedTextColor.YELLOW,
+                net.kyori.adventure.text.format.NamedTextColor.GREEN,
+                net.kyori.adventure.text.format.NamedTextColor.LIGHT_PURPLE)) {
+            assertEquals(color, WikiDialogService.interactiveColor(color));
+        }
+        assertEquals(net.kyori.adventure.text.format.NamedTextColor.GOLD,
+                WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.GOLD));
+    }
+
+    @Test
+    void iconTitlesUseReadableWikiNamesWithoutTechnicalSeparators() {
+        assertEquals("Ametystowa Laska", WikiIconPresentation.readableTitle("Ametystowa_Laska"));
+        assertEquals("Boski Samurajski Łuk", WikiIconPresentation.readableTitle(" Boski__Samurajski_Łuk "));
+        assertEquals("Czerwony Miecz Świetlny", WikiIconPresentation.readableTitle("Czerwony Miecz Świetlny"));
+    }
+
+    @Test
+    void stripsWikiBehaviorSwitchesFromBothTextModes() {
+        String markup = "__NOTOC__\nOpis. __NOEDITSECTION__";
+        assertEquals("Opis.", WikiArticleService.toPlainText(markup));
+        assertEquals("Opis.", WikiArticleService.toDialogText(markup));
+    }
+
+    @Test
+    void linkLabelsIncludeTrailingInflectionWithoutChangingDestination() {
+        String markup = "Poprzednio byla [[Mod]]em i [[Gracz|gracz]]ami.";
+        var links = WikiArticleService.extractLinks(markup, "https://wiki.laina.pl/");
+        assertEquals("Modem", links.get(0).label());
+        assertEquals("Mod", links.get(0).targetTitle());
+        assertEquals("graczami", links.get(1).label());
+        assertEquals("Poprzednio byla Modem i graczami.", WikiArticleService.toDialogText(markup));
+    }
+
+    @Test
     void layoutSeparatesListsWithoutLosingHeadingsOrLinks() {
         String text = "Wstęp.\n\n== Zaklęcia ==\n\n• Wydajność 6\n• Szczęście 4\n"
                 + "Dalszy opis.\n\n== Jak zdobyć? ==\n\n• Z Klucza Diamentowego.";

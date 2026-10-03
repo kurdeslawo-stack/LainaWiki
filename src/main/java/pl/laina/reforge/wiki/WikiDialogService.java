@@ -66,7 +66,6 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         requests.remove(player.getUniqueId());
         trails.remove(player.getUniqueId());
         ActionButton search = ActionButton.builder(Component.text("Szukaj przedmiotu", NamedTextColor.GOLD, TextDecoration.BOLD))
-                .tooltip(Component.text("Wyszukaj przedmiot w Księdze Lainy"))
                 .width(170)
                 .action(DialogAction.customClick((response, audience) -> {
                     if (audience instanceof Player target) {
@@ -96,7 +95,13 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
                         .inputs(List.of(DialogInput.text("query", Component.text("WPISZ NAZWĘ PRZEDMIOTU", NamedTextColor.GOLD))
                                 .width(CONTENT_WIDTH).maxLength(80).build()))
                         .build())
-                .type(DialogType.multiAction(actions).columns(2).build()));
+                .type(DialogType.multiAction(actions).columns(2)
+                        .exitAction(ActionButton.builder(Component.text("Więcej informacji znajdziesz na stronie ", NamedTextColor.WHITE)
+                                        .append(Component.text("wiki.laina.pl", NamedTextColor.AQUA)))
+                                .width(CONTENT_WIDTH)
+                                .action(DialogAction.staticAction(ClickEvent.openUrl("https://wiki.laina.pl/")))
+                                .build())
+                        .build()));
         player.showDialog(dialog);
     }
 
@@ -105,9 +110,8 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         for (WikiCategory category : WikiCategory.values()) {
             int count = catalog.entries(category).size();
             actions.add(ActionButton.builder(Component.text("• ", category.color())
-                            .append(Component.text(category.label(), NamedTextColor.WHITE))
+                            .append(Component.text(category.label(), interactiveColor(category.color())))
                             .append(Component.text("  ·  " + count, NamedTextColor.GRAY)))
-                    .tooltip(Component.text("Przeglądaj " + category.label().toLowerCase() + " (" + count + ")"))
                     .width(170)
                     .action(click(target -> showCategory(target, category, 0))).build());
         }
@@ -119,7 +123,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         }
         actions.add(action("← Do księgi", "Wróć na stronę główną", NamedTextColor.GRAY, this::showHome));
         showMenu(player, "Ścieżki księgi", Component.text("WYBIERZ DZIAŁ", NamedTextColor.GOLD, TextDecoration.BOLD)
-                .append(Component.text("\n" + catalog.size() + " modeli  •  6 działów", NamedTextColor.AQUA)), actions);
+                .append(Component.text("\n" + catalog.size() + " przedmiotów  •  6 działów", NamedTextColor.AQUA)), actions);
     }
 
     private void showWikiPages(Player player, int requestedPage) {
@@ -135,14 +139,14 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         for (int offset = start; offset < Math.min(start + PAGE_SIZE, titles.size()); offset++) {
             String title = titles.get(offset);
             actions.add(ActionButton.builder(Component.text(shortLabel(title), NamedTextColor.WHITE))
-                    .tooltip(Component.text(title)).width(170)
+                    .width(170)
                     .action(click(target -> openWikiTitle(target, title))).build());
         }
-        if (page > 0) actions.add(action("← Poprzednia", "Poprzednia strona", NamedTextColor.GRAY,
-                target -> showWikiPages(target, page - 1)));
+        actions.add(action("← Wszystkie działy", "Wróć do działów", NamedTextColor.GRAY, this::showCategories));
         if (page < lastPage) actions.add(action("Następna →", "Następna strona", NamedTextColor.GOLD,
                 target -> showWikiPages(target, page + 1)));
-        actions.add(action("← Wszystkie działy", "Wróć do działów", NamedTextColor.GRAY, this::showCategories));
+        if (page > 0) actions.add(action("← Poprzednia", "Poprzednia strona", NamedTextColor.GRAY,
+                target -> showWikiPages(target, page - 1)));
         Component intro = Component.text("ODKRYTE NA WIKI", NamedTextColor.LIGHT_PURPLE, TextDecoration.BOLD)
                 .append(Component.text("\n" + titles.size() + " stron  •  strona " + (page + 1)
                         + " z " + (lastPage + 1), NamedTextColor.GRAY));
@@ -212,16 +216,15 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         int start = page * PAGE_SIZE;
         for (int index = start; index < Math.min(start + PAGE_SIZE, entries.size()); index++) {
             WikiEntry entry = entries.get(index);
-            actions.add(ActionButton.builder(Component.text(shortLabel(entry.title()), category.color()))
-                    .tooltip(Component.text(entry.title()))
+            actions.add(ActionButton.builder(Component.text(shortLabel(entry.title()), interactiveColor(category.color())))
                     .width(170)
                     .action(click(target -> openEntry(target, entry, entry.createIcon()))).build());
         }
-        if (page > 0) actions.add(action("← Poprzednia", "Poprzednia strona", NamedTextColor.GRAY,
-                target -> showCategory(target, category, page - 1)));
+        actions.add(action("← Wszystkie działy", "Wróć do działów", NamedTextColor.GRAY, this::showCategories));
         if (page < lastPage) actions.add(action("Następna →", "Następna strona", NamedTextColor.GOLD,
                 target -> showCategory(target, category, page + 1)));
-        actions.add(action("← Wszystkie działy", "Wróć do działów", NamedTextColor.GRAY, this::showCategories));
+        if (page > 0) actions.add(action("← Poprzednia", "Poprzednia strona", NamedTextColor.GRAY,
+                target -> showCategory(target, category, page - 1)));
         Component intro = Component.text(category.label().toUpperCase(), category.color(), TextDecoration.BOLD)
                 .append(Component.text("\n" + entries.size() + " kart  •  strona " + (page + 1) + " z " + (lastPage + 1), NamedTextColor.GRAY));
         showMenu(player, category.label(), intro, actions);
@@ -236,7 +239,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         List<ActionButton> actions = new ArrayList<>();
         for (WikiEntry entry : history) {
             actions.add(ActionButton.builder(Component.text(shortLabel(entry.title()), NamedTextColor.AQUA))
-                    .tooltip(Component.text(entry.title())).width(170)
+                    .width(170)
                     .action(click(target -> openEntry(target, entry, entry.createIcon()))).build());
         }
         actions.add(action("← Do księgi", "Wróć na stronę główną", NamedTextColor.GRAY, this::showHome));
@@ -329,7 +332,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         List<String> pages = articlePages(acquisitionOnly ? article.acquisitionText() : article.text(), ARTICLE_PAGE_LENGTH);
         int page = Math.clamp(requestedPage, 0, pages.size() - 1);
         List<DialogBody> body = new ArrayList<>();
-        body.add(DialogBody.item(icon).showDecorations(false).showTooltip(true)
+        body.add(DialogBody.item(WikiIconPresentation.titleOnly(icon, article.title())).showDecorations(false).showTooltip(true)
                 .width(ICON_SIZE).height(ICON_SIZE)
                 .description(DialogBody.plainMessage(articleIntro(page + 1, pages.size()), CONTENT_WIDTH - ICON_SIZE - 2))
                 .build());
@@ -420,7 +423,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
 
     private ActionButton button(String label, String tooltip, ClickEvent<?> click) {
         return ActionButton.builder(Component.text(label))
-                .tooltip(Component.text(tooltip)).width(170)
+                .width(170)
                 .action(DialogAction.staticAction(click)).build();
     }
 
@@ -429,8 +432,15 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
     }
 
     private ActionButton action(String label, String tooltip, NamedTextColor color, Consumer<Player> handler) {
-        return ActionButton.builder(Component.text(label, color))
-                .tooltip(Component.text(tooltip)).width(170).action(click(handler)).build();
+        return ActionButton.builder(Component.text(label, interactiveColor(color)))
+                .width(170).action(click(handler)).build();
+    }
+
+    static NamedTextColor interactiveColor(NamedTextColor color) {
+        if (color == NamedTextColor.RED || color == NamedTextColor.DARK_RED) return NamedTextColor.GOLD;
+        if (color == NamedTextColor.GRAY || color == NamedTextColor.DARK_GRAY
+                || color == NamedTextColor.BLUE || color == NamedTextColor.DARK_BLUE) return NamedTextColor.AQUA;
+        return color;
     }
 
     private DialogAction click(Consumer<Player> handler) {
@@ -468,7 +478,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
 
     private Component homeIntro() {
         return Component.text("KSIĘGA PRZEDMIOTÓW", NamedTextColor.GOLD, TextDecoration.BOLD)
-                .append(Component.text("\n" + catalog.size() + " modeli  •  6 działów", NamedTextColor.AQUA))
+                .append(Component.text("\n" + catalog.size() + " przedmiotów  •  6 działów", NamedTextColor.AQUA))
                 .append(Component.text("\nWyszukaj item lub wybierz ścieżkę poniżej.", NamedTextColor.GRAY));
     }
 

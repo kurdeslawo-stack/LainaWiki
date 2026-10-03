@@ -19,7 +19,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public final class WikiArticleService implements AutoCloseable {
-    private static final Pattern INTERNAL_LINK = Pattern.compile("\\[\\[([^]\\[|]+)(?:\\|([^]\\[]+))?]]");
+    private static final Pattern INTERNAL_LINK = Pattern.compile("\\[\\[([^]\\[|]+)(?:\\|([^]\\[]+))?]](\\p{Ll}*)");
     private static final Pattern EXTERNAL_LINK = Pattern.compile("\\[(https?://[^\\s\\]]+)\\s+([^]]+)]");
     private static final Pattern HEADING = Pattern.compile("(?m)^(={2,6})[ \\t]*(.*?)[ \\t]*\\1[ \\t]*$");
     private final String endpoint;
@@ -131,6 +131,7 @@ public final class WikiArticleService implements AutoCloseable {
             if (namespace.startsWith("plik:") || namespace.startsWith("file:")
                     || namespace.startsWith("kategoria:") || namespace.startsWith("category:")) continue;
             String label = internal.group(2) == null ? target : internal.group(2).strip();
+            label += internal.group(3);
             String page = target.split("#", 2)[0].strip();
             if (!label.isBlank() && !page.isBlank()) links.add(new WikiLink(label, WikiUrls.article(publicBase, page), page,
                     internal.start() >= acquisition.start && internal.start() < acquisition.end));
@@ -165,6 +166,7 @@ public final class WikiArticleService implements AutoCloseable {
     private static String cleanText(String wikiText, boolean keepHeadings) {
         String text = wikiText == null ? "" : wikiText;
         text = text.replace("\r\n", "\n").replace('\r', '\n');
+        text = text.replaceAll("(?i)__(?:NOTOC|TOC|FORCETOC|NOEDITSECTION|NOGALLERY|HIDDENCAT|INDEX|NOINDEX|STATICREDIRECT|NEWSECTIONLINK|NONEWSECTIONLINK|DISAMBIG)__", "");
         text = text.replaceAll("(?is)\\[\\[(?:Plik|File):[^]]+]]", "");
         text = text.replaceAll("(?is)\\[\\[(?:Kategoria|Category):[^]]+]]", "");
         text = EXTERNAL_LINK.matcher(text).replaceAll("$2");

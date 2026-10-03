@@ -6,6 +6,10 @@ Samodzielny plugin Paper 26.2 (Java 25) z dialogową encyklopedią przedmiotów 
 - `/wikici` — otwiera kartę przedmiotu trzymanego w ręce; działa też przez przycisk w Księdze.
 - Indeks przedmiotów aktualizuje się z Wiki w tle. `items.yml` jest lokalną mapą modeli do artykułów.
 - Linki z treści artykułu prowadzą do powiązanych stron Wiki.
+- Tooltip ikony zawiera tylko czytelną nazwę artykułu, bez statystyk bazowego materiału,
+  lore i zaklęć. Dotyczy też podglądu z ręki: zmieniana jest tylko kopia do dialogu,
+  nigdy item gracza. Opisy i właściwości czytamy z Wiki w karcie, nie zgadujemy ich.
+- Przyciski nie wyświetlają dymków po najechaniu.
 
 ## Ulubione i ścieżki zdobywania
 

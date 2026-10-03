@@ -8,7 +8,7 @@ public enum WikiCategory {
     TOOLS("Narzędzia", "tool", NamedTextColor.YELLOW),
     FOOD("Jedzenie i eliksiry", "consumable", NamedTextColor.GREEN),
     MATERIALS("Materiały", "material", NamedTextColor.GOLD),
-    OTHER("Osobliwości", "misc", NamedTextColor.LIGHT_PURPLE);
+    OTHER("Pozostałe przedmioty", "misc", NamedTextColor.LIGHT_PURPLE);
 
     private final String label;
     private final String type;
