@@ -8,6 +8,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class WikiTextTest {
     @Test
+    void hidesCommentsAndDecodesEntitiesWithoutMovingLinks() {
+        String markup = "A &amp; B <!-- [[Ukryty]] --> [[Łuk|Łuk&nbsp;&#38;&nbsp;strzała]] &lt;3 &#x1F600;";
+        var text = WikiArticleService.parseDialogText(markup, "https://wiki.laina.pl/");
+        assertEquals("A & B  Łuk & strzała <3 😀", text.text());
+        assertEquals(1, text.links().size());
+        var span = text.links().getFirst();
+        assertEquals("Łuk & strzała", text.text().substring(span.start(), span.end()));
+        assertEquals(1, WikiArticleService.extractLinks(markup, "https://wiki.laina.pl/").size());
+        assertEquals("Widoczne", WikiArticleService.toDialogText("Widoczne<!-- niedomknięty komentarz"));
+    }
+    @Test
     void interactiveButtonsDoNotLookDisabledOrMissing() {
         var aqua = net.kyori.adventure.text.format.NamedTextColor.AQUA;
         var gold = net.kyori.adventure.text.format.NamedTextColor.GOLD;
@@ -17,13 +28,30 @@ final class WikiTextTest {
         assertEquals(aqua, WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.DARK_BLUE));
         assertEquals(gold, WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.RED));
         assertEquals(gold, WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.DARK_RED));
-        for (var color : java.util.List.of(net.kyori.adventure.text.format.NamedTextColor.YELLOW,
-                net.kyori.adventure.text.format.NamedTextColor.GREEN,
-                net.kyori.adventure.text.format.NamedTextColor.LIGHT_PURPLE)) {
-            assertEquals(color, WikiDialogService.interactiveColor(color));
-        }
+        assertEquals(aqua, WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.LIGHT_PURPLE));
         assertEquals(net.kyori.adventure.text.format.NamedTextColor.GOLD,
                 WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.GOLD));
+        assertEquals(net.kyori.adventure.text.format.NamedTextColor.WHITE,
+                WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.WHITE));
+        assertEquals(aqua, WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.DARK_PURPLE));
+    }
+
+    @Test
+    void homeAccentsPreserveGreenAndYellowWithoutRestoringPink() {
+        for (var color : java.util.List.of(net.kyori.adventure.text.format.NamedTextColor.GREEN,
+                net.kyori.adventure.text.format.NamedTextColor.YELLOW)) {
+            assertEquals(color, WikiDialogService.interactiveColor(color));
+        }
+        assertEquals(net.kyori.adventure.text.format.NamedTextColor.AQUA,
+                WikiDialogService.interactiveColor(net.kyori.adventure.text.format.NamedTextColor.LIGHT_PURPLE));
+    }
+
+    @Test
+    void categoriesUseTheSameGoldAndAquaAccentPalette() {
+        for (var category : WikiCategory.values()) {
+            assertTrue(category.color() == net.kyori.adventure.text.format.NamedTextColor.GOLD
+                    || category.color() == net.kyori.adventure.text.format.NamedTextColor.AQUA);
+        }
     }
 
     @Test

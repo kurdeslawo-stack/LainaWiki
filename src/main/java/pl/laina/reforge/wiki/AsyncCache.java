@@ -12,7 +12,10 @@ final class AsyncCache<T> implements AutoCloseable {
     interface Fetcher<T> { T fetch(String key) throws Exception; }
     record Result<T>(T value, boolean stale) {}
     private record Entry<T>(T value, long expires) {}
+    private record Failure(Exception cause, long retryAt) {}
+    private static final long FAILURE_BACKOFF_MILLIS = 30_000;
     private final Map<String, Entry<T>> cache = new LinkedHashMap<>(16, .75f, true);
+    private final Map<String, Failure> failures = new LinkedHashMap<>();
     private final Map<String, CompletableFuture<Result<T>>> pending = new HashMap<>();
     private final ThreadPoolExecutor executor;
     private final Fetcher<T> fetcher;
@@ -41,6 +44,12 @@ final class AsyncCache<T> implements AutoCloseable {
             return CompletableFuture.completedFuture(new Result<>(previous.value, false));
         }
         if (pending.containsKey(key)) return pending.get(key);
+        Failure recentFailure = failures.get(key);
+        if (recentFailure != null && recentFailure.retryAt > clock.getAsLong()) {
+            return previous == null ? CompletableFuture.failedFuture(recentFailure.cause)
+                    : CompletableFuture.completedFuture(new Result<>(previous.value, true));
+        }
+        failures.remove(key);
         CompletableFuture<Result<T>> future = new CompletableFuture<>();
         pending.put(key, future);
         try {
@@ -51,6 +60,7 @@ final class AsyncCache<T> implements AutoCloseable {
                     T value = fetcher.fetch(key);
                     synchronized (this) {
                         if (!closed) {
+                            failures.remove(key);
                             cache.put(key, new Entry<>(value, clock.getAsLong() + ttl));
                             while (cache.size() > capacity) cache.remove(cache.keySet().iterator().next());
                         }
@@ -59,6 +69,12 @@ final class AsyncCache<T> implements AutoCloseable {
                 } catch (Exception exception) {
                     if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
                     failure = exception;
+                    synchronized (this) {
+                        if (!closed) {
+                            failures.put(key, new Failure(exception, clock.getAsLong() + FAILURE_BACKOFF_MILLIS));
+                            while (failures.size() > capacity) failures.remove(failures.keySet().iterator().next());
+                        }
+                    }
                     if (previous != null) result = new Result<>(previous.value, true);
                 } finally {
                     synchronized (this) { pending.remove(key, future); }
@@ -81,6 +97,7 @@ final class AsyncCache<T> implements AutoCloseable {
         var unfinished = new ArrayList<>(pending.values());
         pending.clear();
         cache.clear();
+        failures.clear();
         unfinished.forEach(future -> future.cancel(false));
     }
 }

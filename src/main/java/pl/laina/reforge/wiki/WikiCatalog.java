@@ -22,13 +22,18 @@ public final class WikiCatalog {
     private final Map<String, WikiEntry> byRuntimeIdentity;
     private final List<WikiEntry> entries;
     private final Map<String, WikiEntry> byTitle;
+    private final List<WikiEntry> uniqueEntries;
+    private static final java.util.regex.Pattern MARKS = java.util.regex.Pattern.compile("\\p{M}+");
+    private static final java.util.regex.Pattern SEPARATORS = java.util.regex.Pattern.compile("[^\\p{L}\\p{N} ]");
+    private static final java.util.regex.Pattern SPACES = java.util.regex.Pattern.compile("[\\s\\p{Z}]+");
 
-    private WikiCatalog(Map<String, WikiEntry> byRuntimeIdentity, List<WikiEntry> entries) {
+    WikiCatalog(Map<String, WikiEntry> byRuntimeIdentity, List<WikiEntry> entries) {
         this.byRuntimeIdentity = Map.copyOf(byRuntimeIdentity);
         this.entries = List.copyOf(entries);
         Map<String, WikiEntry> indexed = new LinkedHashMap<>();
-        entries.forEach(entry -> indexed.putIfAbsent(normalize(entry.title()), entry));
+        entries.forEach(entry -> indexed.putIfAbsent(titleKey(entry.title()), entry));
         byTitle = Map.copyOf(indexed);
+        uniqueEntries = List.copyOf(indexed.values());
     }
 
     public static WikiCatalog load(LainaWikiPlugin plugin) {
@@ -85,27 +90,30 @@ public final class WikiCatalog {
     }
 
     public Optional<WikiEntry> exact(String query) {
-        String needle = normalize(query);
+        String needle = titleKey(query);
         if (needle.isBlank()) return Optional.empty();
         return Optional.ofNullable(byTitle.get(needle));
     }
 
     public List<String> suggestions(String query, int limit) {
         String needle = normalize(query);
-        return entries.stream()
-                .map(WikiEntry::title)
-                .distinct()
-                .filter(title -> needle.isBlank() || normalize(title).contains(needle))
-                .limit(limit)
-                .toList();
+        return WikiSearch.suggestions(titles(), query, limit);
     }
 
     public int size() {
+        return uniqueEntries.size();
+    }
+
+    public int mappingCount() {
         return entries.size();
     }
 
+    public List<String> titles() {
+        return uniqueEntries.stream().map(WikiEntry::title).toList();
+    }
+
     public boolean containsTitle(String title) {
-        String normalized = normalize(title);
+        String normalized = titleKey(title);
         return byTitle.containsKey(normalized);
     }
 
@@ -113,26 +121,34 @@ public final class WikiCatalog {
         Map<String, WikiEntry> uniqueTitles = new LinkedHashMap<>();
         for (WikiEntry entry : entries) {
             if (entry.category() == category) {
-                uniqueTitles.putIfAbsent(normalize(entry.title()), entry);
+                uniqueTitles.putIfAbsent(titleKey(entry.title()), entry);
             }
         }
         return List.copyOf(uniqueTitles.values());
     }
 
     public Optional<WikiEntry> random() {
-        if (entries.isEmpty()) return Optional.empty();
-        return Optional.of(entries.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(entries.size())));
+        if (uniqueEntries.isEmpty()) return Optional.empty();
+        return Optional.of(uniqueEntries.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(uniqueEntries.size())));
     }
 
     static String normalize(String value) {
         String decomposed = Normalizer.normalize(value == null ? "" : value, Normalizer.Form.NFD);
-        return decomposed.replaceAll("\\p{M}+", "")
+        String plain = MARKS.matcher(decomposed).replaceAll("")
                 .replace('_', ' ')
                 .toLowerCase(Locale.ROOT)
-                .replace('ł', 'l')
-                .replaceAll("[^a-z0-9 ]", " ")
-                .replaceAll("\\s+", " ")
-                .trim();
+                .replace('ł', 'l');
+        return SPACES.matcher(SEPARATORS.matcher(plain).replaceAll(" ")).replaceAll(" ").trim();
+    }
+
+    static String displayTitle(String value) {
+        return SPACES.matcher(Normalizer.normalize(value == null ? "" : value, Normalizer.Form.NFC)
+                .replace('_', ' ')).replaceAll(" ").trim();
+    }
+
+    /** Page identity preserves meaningful letters and punctuation; search may be accent-insensitive. */
+    static String titleKey(String value) {
+        return displayTitle(value).toLowerCase(Locale.ROOT);
     }
 
     private static String identity(Material material, int cmd) {

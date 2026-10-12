@@ -3,9 +3,6 @@ package pl.laina.reforge.wiki;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 
-import javax.xml.XMLConstants;
-import javax.xml.parsers.DocumentBuilderFactory;
-import java.io.ByteArrayInputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -33,6 +30,7 @@ public final class WikiIndexService implements AutoCloseable {
     private final java.util.concurrent.atomic.AtomicBoolean refreshing = new java.util.concurrent.atomic.AtomicBoolean();
     private volatile boolean closed;
     private org.bukkit.scheduler.BukkitTask task;
+    private int consecutiveFailures;
     private volatile Map<String, String> titles = Map.of();
 
     public WikiIndexService(LainaWikiPlugin plugin) {
@@ -49,23 +47,34 @@ public final class WikiIndexService implements AutoCloseable {
         }
     }
 
-    public void start() {
-        long refreshTicks = Math.clamp(plugin.getConfig().getLong("wiki.index-refresh-minutes", 360), 1L, 10080L) * 1200L;
-        task = plugin.getServer().getScheduler().runTaskTimerAsynchronously(plugin, this::refresh, 20L, refreshTicks);
+    public synchronized void start() {
+        if (!closed && task == null) schedule(20L);
+    }
+
+    private synchronized void schedule(long ticks) {
+        if (closed || !plugin.isEnabled()) return;
+        try {
+            task = plugin.getServer().getScheduler().runTaskLaterAsynchronously(plugin, this::refresh, ticks);
+        } catch (org.bukkit.plugin.IllegalPluginAccessException ignored) { }
+    }
+
+    static long nextRefreshMinutes(long configuredMinutes, int failures) {
+        long normal = Math.clamp(configuredMinutes, 1L, 10080L);
+        return failures <= 0 ? normal : Math.min(normal, Math.min(30L, 1L << Math.min(failures - 1, 5)));
     }
 
     public Optional<String> exact(String title) {
-        return Optional.ofNullable(titles.get(WikiCatalog.normalize(title)));
+        return Optional.ofNullable(titles.get(WikiCatalog.titleKey(title)));
     }
 
     public Optional<String> search(String query) {
         String needle = WikiCatalog.normalize(query);
         if (needle.isBlank()) return Optional.empty();
-        String exact = titles.get(needle);
+        String exact = titles.get(WikiCatalog.titleKey(query));
         if (exact != null) return Optional.of(exact);
-        return titles.entrySet().stream().filter(entry -> entry.getKey().startsWith(needle))
+        return titles.entrySet().stream().filter(entry -> WikiCatalog.normalize(entry.getValue()).startsWith(needle))
                 .map(Map.Entry::getValue).findFirst()
-                .or(() -> titles.entrySet().stream().filter(entry -> entry.getKey().contains(needle))
+                .or(() -> titles.entrySet().stream().filter(entry -> WikiCatalog.normalize(entry.getValue()).contains(needle))
                         .map(Map.Entry::getValue).findFirst());
     }
 
@@ -74,14 +83,15 @@ public final class WikiIndexService implements AutoCloseable {
     }
 
     public List<String> suggestions(String query, int limit) {
-        String needle = WikiCatalog.normalize(query);
-        return titles.entrySet().stream()
-                .filter(entry -> needle.isBlank() || entry.getKey().contains(needle))
-                .map(Map.Entry::getValue).limit(limit).toList();
+        return WikiSearch.suggestions(titles.values(), query, limit);
     }
 
     public int size() {
         return titles.size();
+    }
+
+    public List<String> titles() {
+        return List.copyOf(titles.values());
     }
 
     private void refresh() {
@@ -94,14 +104,21 @@ public final class WikiIndexService implements AutoCloseable {
             Files.createDirectories(cacheFile.getParent());
             Path temporary = cacheFile.resolveSibling(cacheFile.getFileName() + ".tmp");
             Files.write(temporary, fetched, StandardCharsets.UTF_8);
-            Files.move(temporary, cacheFile, StandardCopyOption.REPLACE_EXISTING);
+            try {
+                Files.move(temporary, cacheFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, cacheFile, StandardCopyOption.REPLACE_EXISTING);
+            }
             publish(fetched);
+            consecutiveFailures = 0;
             plugin.getLogger().info("Wiki: zsynchronizowano " + titles.size() + " stron przedmiotow.");
         } catch (Exception exception) {
+            consecutiveFailures = Math.min(30, consecutiveFailures + 1);
             if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
             if (!closed) plugin.getLogger().warning("Wiki: synchronizacja nieudana, zachowano poprzedni indeks: " + exception.getMessage());
         } finally {
             refreshing.set(false);
+            schedule(nextRefreshMinutes(plugin.getConfig().getLong("wiki.index-refresh-minutes", 360), consecutiveFailures) * 1200L);
         }
     }
 
@@ -117,15 +134,9 @@ public final class WikiIndexService implements AutoCloseable {
             HttpRequest request = HttpRequest.newBuilder(URI.create(endpoint + "?" + query))
                     .timeout(Duration.ofSeconds(12)).header("User-Agent", "LainaWiki/0.1 WikiIndex")
                     .GET().build();
-            HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            HttpResponse<byte[]> response = client.send(request, WikiHttp.limitedBody());
             if (response.statusCode() != 200) throw new IllegalStateException("Wiki HTTP " + response.statusCode());
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
-            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-            factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
-            factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
-            var document = factory.newDocumentBuilder().parse(new ByteArrayInputStream(response.body()));
+            var document = WikiHttp.parseXml(response.body());
             if (document.getElementsByTagName("error").getLength() > 0) {
                 throw new IllegalStateException("Wiki zwróciła błąd API; zachowano pełny poprzedni indeks");
             }
@@ -145,14 +156,14 @@ public final class WikiIndexService implements AutoCloseable {
     private void publish(List<String> source) {
         Map<String, String> indexed = new LinkedHashMap<>();
         for (String title : source) {
-            String normalized = WikiCatalog.normalize(title);
-            if (!normalized.isBlank()) indexed.putIfAbsent(normalized, title);
+            String normalized = WikiCatalog.titleKey(title);
+            if (!normalized.isBlank()) indexed.putIfAbsent(normalized, WikiCatalog.displayTitle(title));
         }
         titles = Collections.unmodifiableMap(indexed);
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         closed = true;
         if (task != null) task.cancel();
         client.shutdownNow();

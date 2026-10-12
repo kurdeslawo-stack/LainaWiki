@@ -3,12 +3,12 @@ package pl.laina.reforge.wiki;
 import net.kyori.adventure.text.format.NamedTextColor;
 
 public enum WikiCategory {
-    WEAPONS("Broń", "weapon", NamedTextColor.RED),
-    ARMOR("Pancerze", "armor", NamedTextColor.BLUE),
-    TOOLS("Narzędzia", "tool", NamedTextColor.YELLOW),
-    FOOD("Jedzenie i eliksiry", "consumable", NamedTextColor.GREEN),
+    WEAPONS("Broń", "weapon", NamedTextColor.GOLD),
+    ARMOR("Pancerze", "armor", NamedTextColor.AQUA),
+    TOOLS("Narzędzia", "tool", NamedTextColor.AQUA),
+    FOOD("Jedzenie i eliksiry", "consumable", NamedTextColor.AQUA),
     MATERIALS("Materiały", "material", NamedTextColor.GOLD),
-    OTHER("Pozostałe przedmioty", "misc", NamedTextColor.LIGHT_PURPLE);
+    OTHER("Pozostałe przedmioty", "misc", NamedTextColor.AQUA);
 
     private final String label;
     private final String type;

@@ -5,3 +5,16 @@ wiki:
   article-cache-minutes: 30
   article-cache-capacity: 256
   max-article-characters: 7000
+  # Kolory napisów (nie zmieniają szarej tekstury przycisków). Format #RRGGBB.
+  colors:
+    text: "#FFFFFF"
+    heading: "#FFAA00"
+    accent: "#55FFFF"
+    link: "#A8C7DC"
+    author-link: "#55FFFF"
+    missing-link: "#FF5555"
+    button: "#55FFFF"
+    button-highlight: "#FFAA00"
+    button-neutral: "#FFFFFF"
+    button-positive: "#55FF55"
+    button-secondary: "#FFFF55"

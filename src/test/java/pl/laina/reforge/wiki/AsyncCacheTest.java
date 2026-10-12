@@ -9,6 +9,41 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class AsyncCacheTest {
     @Test
+    void repeatedColdFailuresBackOffThenRecover() throws Exception {
+        AtomicLong time = new AtomicLong();
+        AtomicInteger calls = new AtomicInteger();
+        try (var cache = new AsyncCache<String>(key -> {
+            if (calls.incrementAndGet() == 1) throw new IOException("Offline");
+            return "recovered";
+        }, 1000, 2, time::get)) {
+            assertThrows(ExecutionException.class, () -> cache.load("a").get(3, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class, () -> cache.load("a").get(3, TimeUnit.SECONDS));
+            assertEquals(1, calls.get());
+            time.set(30_001);
+            assertEquals("recovered", cache.load("a").get(3, TimeUnit.SECONDS).value());
+            assertEquals(2, calls.get());
+        }
+    }
+
+    @Test
+    void staleFallbackStaysStaleDuringBackoffAndDoesNotRefetch() throws Exception {
+        AtomicLong time = new AtomicLong();
+        AtomicInteger calls = new AtomicInteger();
+        try (var cache = new AsyncCache<String>(key -> {
+            if (calls.incrementAndGet() > 1) throw new IOException("Offline");
+            return "good";
+        }, 100, 2, time::get)) {
+            cache.load("a").get(3, TimeUnit.SECONDS);
+            time.set(101);
+            assertTrue(cache.load("a").get(3, TimeUnit.SECONDS).stale());
+            assertTrue(cache.load("a").get(3, TimeUnit.SECONDS).stale());
+            assertEquals(2, calls.get());
+            time.set(30_102);
+            assertTrue(cache.load("a").get(3, TimeUnit.SECONDS).stale());
+            assertEquals(3, calls.get());
+        }
+    }
+    @Test
     void saturatedQueueRejectsInsteadOfRunningHttpOnCallerThread() throws Exception {
         CountDownLatch started = new CountDownLatch(3);
         CountDownLatch release = new CountDownLatch(1);
