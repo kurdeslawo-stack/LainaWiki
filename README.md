@@ -85,6 +85,13 @@ Analiza projektu i lista dalszych usprawnień: [PROJECT_REVIEW.md](PROJECT_REVIE
 
 ## Aktualizacja 2026-10-12
 
+Opcjonalna integracja Iskierki udostępnia metodę
+`describeHeldItem(Player, boolean acquisition)` na instancji pluginu. Wywołanie musi
+nastąpić na głównym wątku serwera. Wynikiem jest `CompletableFuture<Map<String,String>>`:
+`status` (`ok`, `empty`, `unknown`, `missing`, `unavailable`), a dla `ok` również
+`title`, `summary`, `stale`. API identyfikuje item tak jak Księga, używa wspólnego
+cache i zwraca wyłącznie fragmenty Wiki. Nieznany item nie otrzymuje zgadywanego opisu.
+
 - Podpowiedzi scalają nazwy z katalogu i indeksu Wiki przed ograniczeniem wyników.
   Warianty `Buty_Erosa` i `Buty Erosa` wyświetlają się jako jedna nazwa ze spacjami.
 - Tożsamość tytułów zachowuje runy, akcenty i interpunkcję; trzy pergaminy runiczne
