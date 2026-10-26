@@ -1,10 +1,13 @@
 # LainaWiki — Księga Lainy
 
-Samodzielny plugin Paper 26.2 (Java 25) z dialogową encyklopedią przedmiotów serwera Laina.pl.
+Samodzielny plugin Paper 26.2+ (Java 25) z dialogową encyklopedią Wiki serwera Laina.pl.
 
-- `/wiki` — otwiera Księgę, wyszukuje przedmiot i pokazuje artykuł z Wiki.
+- `/wiki` — otwiera Księgę, wyszukuje dowolny artykuł i pokazuje jego treść z Wiki.
 - `/wikici` — otwiera kartę przedmiotu trzymanego w ręce; działa też przez przycisk w Księdze.
-- Indeks przedmiotów aktualizuje się z Wiki w tle. `items.yml` jest lokalną mapą modeli do artykułów.
+- Indeks wszystkich publicznych artykułów oraz osobna lista przedmiotów aktualizują się z Wiki w tle.
+  Dział „Inne artykuły” zawiera mechaniki, poradniki i hasła spoza kategorii przedmiotów.
+  Licznik artykułów scala indeks i lokalny katalog bez duplikatów spacja/podkreślnik.
+  `items.yml` jest lokalną mapą modeli do artykułów.
 - Ogólne hasło pokazuje listę wyników zamiast otwierać pierwszy przedmiot.
   Wyszukiwanie rozpoznaje kolejność słów i proponuje podobne nazwy przy drobnych
   literówkach. Można też przeszukać całą Wiki w przeglądarce.
@@ -13,7 +16,12 @@ Samodzielny plugin Paper 26.2 (Java 25) z dialogową encyklopedią przedmiotów 
 - „Pełna Wiki ↗” jest zwykłym przyciskiem; Esc na stronie głównej nie otwiera linku.
 - Linki z treści artykułu prowadzą do powiązanych stron Wiki.
 - Galerie pokazują pojedynczą listę linków tekstowych oraz informację o pełnej
-  galerii na stronie WWW; znaczniki HTML podkreślenia nie są wyświetlane dosłownie.
+  galerii na stronie WWW, również dla wpisów zawierających tylko `link=`.
+- `<u>`, `<b>`/`<strong>`, `<i>`/`<em>` i przekreślenie nadają formatowanie tekstowi;
+  zachowują je także linki i fragmenty na kolejnych stronach. Obsługiwane są też apostrofy Wiki.
+  Znaczniki łamania linii, w tym `</br>` i zakodowane encje HTML, tworzą nową linię.
+- Tabele Wiki są zamieniane na listy z opisanymi wartościami i klikalnymi linkami.
+  Nagrody dzienne pokazują dzień, nagrodę oraz ilości zależne od przynależności i poziomu gildii.
 - Brakujące artykuły mają czerwone odnośniki i własny komunikat. Błędy połączenia
   są zgłaszane osobno. Statusy linków pobieramy razem z artykułem i cache'ujemy
   razem z nim (nie wykonujemy osobnego zapytania dla każdego odnośnika).
@@ -64,8 +72,11 @@ klawiszem Esc wymaga jeszcze poprawki: odpowiedź może ponownie otworzyć kart�
 
 Cache mieści domyślnie 256 opisów (`wiki.article-cache-capacity`). Po wygaśnięciu
 opisu plugin próbuje pobrać aktualny. Jeśli Wiki nie odpowiada, pokazuje zachowany
-opis z informacją, że może być nieaktualny. Cache artykułów działa w pamięci:
-po restarcie trzeba pobrać opisy ponownie. Indeks stron jest zapisywany na dysku.
+opis z informacją, że może być nieaktualny.
+Jeśli API potwierdzi brak artykułu, stara kopia jest unieważniana, a gracz dostaje komunikat
+„Artykuł jeszcze nie istnieje”; brak strony nie jest traktowany jako awaria połączenia.
+Cache artykułów działa w pamięci: po restarcie trzeba pobrać opisy ponownie.
+Indeks stron jest zapisywany na dysku.
 Po błędzie ponowne pobranie tego samego opisu czeka 30 sekund. Nieudana
 synchronizacja indeksu ponawia się po 1, 2, 4, 8, 16, następnie maksymalnie
 30 minutach (nie rzadziej niż ustawiony normalny interwał). Pełny poprzedni indeks

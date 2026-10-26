@@ -23,8 +23,14 @@ final class AsyncCache<T> implements AutoCloseable {
     private final long ttl;
     private final int capacity;
     private boolean closed;
+    private final java.util.function.Predicate<Exception> allowStale;
 
     AsyncCache(Fetcher<T> fetcher, long ttl, int capacity, LongSupplier clock) {
+        this(fetcher, ttl, capacity, clock, failure -> true);
+    }
+    AsyncCache(Fetcher<T> fetcher, long ttl, int capacity, LongSupplier clock,
+               java.util.function.Predicate<Exception> allowStale) {
+        this.allowStale = allowStale;
         this.fetcher = fetcher;
         this.ttl = ttl;
         this.capacity = Math.max(1, capacity);
@@ -46,7 +52,7 @@ final class AsyncCache<T> implements AutoCloseable {
         if (pending.containsKey(key)) return pending.get(key);
         Failure recentFailure = failures.get(key);
         if (recentFailure != null && recentFailure.retryAt > clock.getAsLong()) {
-            return previous == null ? CompletableFuture.failedFuture(recentFailure.cause)
+            return previous == null || !allowStale.test(recentFailure.cause) ? CompletableFuture.failedFuture(recentFailure.cause)
                     : CompletableFuture.completedFuture(new Result<>(previous.value, true));
         }
         failures.remove(key);
@@ -71,11 +77,12 @@ final class AsyncCache<T> implements AutoCloseable {
                     failure = exception;
                     synchronized (this) {
                         if (!closed) {
+                            if (!allowStale.test(exception)) cache.remove(key);
                             failures.put(key, new Failure(exception, clock.getAsLong() + FAILURE_BACKOFF_MILLIS));
                             while (failures.size() > capacity) failures.remove(failures.keySet().iterator().next());
                         }
                     }
-                    if (previous != null) result = new Result<>(previous.value, true);
+                    if (previous != null && allowStale.test(exception)) result = new Result<>(previous.value, true);
                 } finally {
                     synchronized (this) { pending.remove(key, future); }
                 }

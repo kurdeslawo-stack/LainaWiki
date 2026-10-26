@@ -21,7 +21,8 @@ public final class WikiArticleService implements AutoCloseable {
     private static final Pattern INTERNAL_LINK = Pattern.compile("\\[\\[([^]\\[|]+)(?:\\|([^]\\[]+))?]](\\p{Ll}*)");
     private static final Pattern EXTERNAL_LINK = Pattern.compile("\\[(https?://[^\\s\\]|]+)[\\s|]+([^]]+)]");
     private static final Pattern HEADING = Pattern.compile("(?m)^(={2,6})[ \\t]*(.*?)[ \\t]*\\1[ \\t]*$");
-    private static final Pattern LINK_MARKER = Pattern.compile("([\uE000\uE002])(\\d+)[\uE001\uE003]");
+    private static final Pattern LINK_MARKER = Pattern.compile("([\uE000\uE002\uE004\uE006])(\\d+)[\uE001\uE003\uE005\uE007]");
+    private static final Pattern FORMAT_TAG = Pattern.compile("(?i)<(/?)(u|b|i|em|strong|s|strike|del)\\b[^>]*>");
     private static final Pattern COMMENT = Pattern.compile("(?s)<!--.*?(?:-->|$)");
     private static final Pattern GALLERY = Pattern.compile("(?is)<gallery\\b[^>]*>(.*?)</gallery\\s*>");
     static final String GALLERY_NOTICE = "W tej sekcji znajduje się galeria. Aby ją zobaczyć, odwiedź pełny artykuł na stronie WWW.";
@@ -48,11 +49,11 @@ public final class WikiArticleService implements AutoCloseable {
         long minutes = Math.clamp(cacheMinutes, 1L, 1440L);
         cache = new AsyncCache<>(this::fetchRemote, Duration.ofMinutes(minutes).toMillis(),
                 Math.clamp(capacity, 1, 2000),
-                System::currentTimeMillis);
+                System::currentTimeMillis, failure -> !isMissingArticle(failure));
     }
 
     public java.util.concurrent.CompletableFuture<AsyncCache.Result<WikiArticle>> load(String title) {
-        return cache.load(title.strip().replace('_', ' '));
+        return cache.load(WikiCatalog.displayTitle(title));
     }
 
     private WikiArticle fetchRemote(String requestedTitle) throws Exception {
@@ -91,7 +92,7 @@ public final class WikiArticleService implements AutoCloseable {
         NodeList linkedPages = parse.getElementsByTagName("pl");
         for (int i = 0; i < linkedPages.getLength(); i++) {
             Element linked = (Element) linkedPages.item(i);
-            if (!linked.hasAttribute("exists")) missing.add(WikiCatalog.normalize(linked.getTextContent()));
+            if (!linked.hasAttribute("exists")) missing.add(WikiCatalog.titleKey(linked.getTextContent()));
         }
         WikiArticle article = new WikiArticle(title, text, extractLinks(wikiText, publicBase), acquisitionText, missing);
         return article;
@@ -144,7 +145,7 @@ public final class WikiArticleService implements AutoCloseable {
     }
 
     static List<WikiLink> extractLinks(String wikiText, String publicBase) {
-        return linkOccurrences(normalizeGalleries(withoutComments(wikiText)), publicBase).stream().map(LinkOccurrence::link).toList();
+        return linkOccurrences(normalizeGalleries(decodeEntities(withoutComments(wikiText))), publicBase).stream().map(LinkOccurrence::link).toList();
     }
 
     private static List<LinkOccurrence> linkOccurrences(String wikiText, String publicBase) {
@@ -176,7 +177,7 @@ public final class WikiArticleService implements AutoCloseable {
 
     static WikiRichText parseDialogText(String wikiText, String publicBase) {
         // Reserve private-use markers only during cleanup; none are sent to the client.
-        String source = normalizeGalleries(withoutComments(wikiText)).replaceAll("[\uE000-\uE003]", "");
+        String source = WikiTables.normalize(normalizeGalleries(decodeEntities(withoutComments(wikiText)))).replaceAll("[\uE000-\uE007]", "");
         List<LinkOccurrence> occurrences = linkOccurrences(source, publicBase).stream()
                 .sorted(Comparator.comparingInt(LinkOccurrence::start)).toList();
         StringBuilder marked = new StringBuilder();
@@ -190,10 +191,12 @@ public final class WikiArticleService implements AutoCloseable {
             cursor = occurrence.end();
         }
         marked.append(source, cursor, source.length());
-        String cleaned = toDialogText(marked.toString());
+        String cleaned = toDialogText(markFormats(marked.toString()));
         StringBuilder plain = new StringBuilder();
         List<WikiRichText.LinkSpan> spans = new ArrayList<>();
         var starts = new HashMap<Integer, Integer>();
+        var formatStarts = new HashMap<Integer, java.util.Deque<Integer>>();
+        var formats = new ArrayList<WikiRichText.FormatSpan>();
         Matcher markers = LINK_MARKER.matcher(cleaned);
         cursor = 0;
         while (markers.find()) {
@@ -201,17 +204,55 @@ public final class WikiArticleService implements AutoCloseable {
             int id = Integer.parseInt(markers.group(2));
             if (markers.group(1).charAt(0) == '\uE000') {
                 starts.put(id, plain.length());
-            } else {
+            } else if (markers.group(1).charAt(0) == '\uE002') {
                 Integer start = starts.remove(id);
                 if (start != null && start < plain.length()) {
                     spans.add(new WikiRichText.LinkSpan(start, plain.length(), occurrences.get(id).link()));
+                }
+            } else if (markers.group(1).charAt(0) == '\uE004') {
+                formatStarts.computeIfAbsent(id, ignored -> new java.util.ArrayDeque<>()).push(plain.length());
+            } else {
+                var stack = formatStarts.get(id);
+                if (stack != null && !stack.isEmpty()) {
+                    int start = stack.pop();
+                    if (start < plain.length()) formats.add(new WikiRichText.FormatSpan(start, plain.length(),
+                            net.kyori.adventure.text.format.TextDecoration.values()[id]));
                 }
             }
             cursor = markers.end();
         }
         plain.append(cleaned, cursor, cleaned.length());
         String text = plain.toString();
-        return new WikiRichText(text, markAuthorLinks(text, spans));
+        formatStarts.forEach((id, stack) -> stack.forEach(start -> {
+            if (start < text.length()) formats.add(new WikiRichText.FormatSpan(start, text.length(),
+                    net.kyori.adventure.text.format.TextDecoration.values()[id]));
+        }));
+        return new WikiRichText(text, markAuthorLinks(text, spans), formats);
+    }
+
+    private static String markFormats(String source) {
+        source = source.replaceAll("(?is)</?(?:big|small|span|div|center|font)[^>]*>", "");
+        source = source.replaceAll("(?m)^[ \\t]*'''([^'\\n]+)'''[ \\t]*$", "== $1 ==");
+        source = FORMAT_TAG.matcher(source).replaceAll(match -> {
+            var decoration = switch (match.group(2).toLowerCase(java.util.Locale.ROOT)) {
+                case "u" -> net.kyori.adventure.text.format.TextDecoration.UNDERLINED;
+                case "b", "strong" -> net.kyori.adventure.text.format.TextDecoration.BOLD;
+                case "i", "em" -> net.kyori.adventure.text.format.TextDecoration.ITALIC;
+                default -> net.kyori.adventure.text.format.TextDecoration.STRIKETHROUGH;
+            };
+            return formatMarker(decoration, match.group(1).isEmpty());
+        });
+        boolean[] active = new boolean[2];
+        return Pattern.compile("'{2,5}").matcher(source).replaceAll(match -> {
+            StringBuilder replacement = new StringBuilder();
+            int length = match.group().length();
+            if (length >= 3) { active[0] = !active[0]; replacement.append(formatMarker(net.kyori.adventure.text.format.TextDecoration.BOLD, active[0])); }
+            if (length == 2 || length == 5) { active[1] = !active[1]; replacement.append(formatMarker(net.kyori.adventure.text.format.TextDecoration.ITALIC, active[1])); }
+            return replacement.toString();
+        });
+    }
+    private static String formatMarker(net.kyori.adventure.text.format.TextDecoration decoration, boolean opening) {
+        return "" + (opening ? '\uE004' : '\uE006') + decoration.ordinal() + (opening ? '\uE005' : '\uE007');
     }
 
     private static List<WikiRichText.LinkSpan> markAuthorLinks(String text, List<WikiRichText.LinkSpan> spans) {
@@ -251,7 +292,7 @@ public final class WikiArticleService implements AutoCloseable {
     }
 
     private static String cleanText(String wikiText, boolean keepHeadings) {
-        String text = normalizeGalleries(withoutComments(wikiText));
+        String text = WikiTables.normalize(normalizeGalleries(decodeEntities(withoutComments(wikiText))));
         text = text.replace("\r\n", "\n").replace('\r', '\n');
         text = text.replaceAll("(?i)__(?:NOTOC|TOC|FORCETOC|NOEDITSECTION|NOGALLERY|HIDDENCAT|INDEX|NOINDEX|STATICREDIRECT|NEWSECTIONLINK|NONEWSECTIONLINK|DISAMBIG)__", "");
         text = text.replaceAll("(?is)\\[\\[(?:Plik|File):[^]]+]]", "");
@@ -259,8 +300,8 @@ public final class WikiArticleService implements AutoCloseable {
         text = EXTERNAL_LINK.matcher(text).replaceAll("$2");
         text = text.replaceAll("(?is)\\[\\[[^]|]+\\|([^]]+)]]", "$1");
         text = text.replaceAll("(?is)\\[\\[([^]]+)]]", "$1");
-        text = text.replaceAll("(?i)<br\\s*/?>", "\n");
-        text = text.replaceAll("(?is)</?(?:big|small|code|span|div|center|nowiki|u|b|i|em|strong|font|p)[^>]*>", "");
+        text = text.replaceAll("(?i)</?br\\s*/?>", "\n");
+        text = text.replaceAll("(?is)</?(?:big|small|code|span|div|center|nowiki|u|b|i|em|strong|s|strike|del|font|p)[^>]*>", "");
         if (keepHeadings) {
             // Some articles use standalone bold labels instead of MediaWiki headings.
             text = text.replaceAll("(?m)^[ \\t]*'''([^'\\n]+)'''[ \\t]*$", "== $1 ==");
@@ -294,7 +335,15 @@ public final class WikiArticleService implements AutoCloseable {
                     String target = internal.group(1).strip();
                     if (target.contains(":")) continue;
                     String label = internal.group(2) == null ? target : internal.group(2).strip();
-                    links.putIfAbsent(WikiCatalog.normalize(target), "* [[" + target + "|" + label + "]]");
+                    links.putIfAbsent(WikiCatalog.titleKey(target), "* [[" + target + "|" + label + "]]");
+                }
+                if (!INTERNAL_LINK.matcher(rest).find()) {
+                    Matcher explicit = Pattern.compile("(?i)(?:^|\\|)link=([^|]+)").matcher(rest);
+                    if (explicit.find()) {
+                        String target = explicit.group(1).strip();
+                        if (!target.isBlank() && !target.contains(":") && !target.contains("[") && !target.contains("]"))
+                            links.putIfAbsent(WikiCatalog.titleKey(target), "* [[" + target + "|" + WikiCatalog.displayTitle(target) + "]]");
+                    }
                 }
             }
             return Matcher.quoteReplacement("\n\n" + GALLERY_NOTICE + "\n\n" + String.join("\n", links.values()) + "\n\n");

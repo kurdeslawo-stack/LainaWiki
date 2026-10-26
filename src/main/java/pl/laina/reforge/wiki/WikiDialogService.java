@@ -73,7 +73,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         requests.remove(player.getUniqueId());
         trails.remove(player.getUniqueId());
         origins.remove(player.getUniqueId());
-        ActionButton search = ActionButton.builder(Component.text("Szukaj przedmiotu", NamedTextColor.GOLD, TextDecoration.BOLD))
+        ActionButton search = ActionButton.builder(Component.text("Szukaj artykułu", NamedTextColor.GOLD, TextDecoration.BOLD))
                 .width(170)
                 .action(DialogAction.customClick((response, audience) -> {
                     if (audience instanceof Player target) {
@@ -87,7 +87,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         actions.add(action("Przedmiot w ręce", "Otwórz kartę trzymanego przedmiotu", NamedTextColor.GREEN, this::openHeld));
         actions.add(action("Przeglądaj działy", "Broń, pancerze, narzędzia i inne", NamedTextColor.AQUA, this::showCategories));
         actions.add(action("Losowa karta", "Otwórz niespodziewaną kartę z księgi", NamedTextColor.YELLOW, this::openRandom));
-        actions.add(action("★ Ulubione", "Twoja zapisana lista przedmiotów do zdobycia", NamedTextColor.GOLD,
+        actions.add(action("★ Ulubione", "Twoja lista zapisanych artykułów", NamedTextColor.GOLD,
                 target -> loadFavorites(target, 0)));
         if (!recent.getOrDefault(player.getUniqueId(), new ArrayDeque<>()).isEmpty()) {
             actions.add(action("Ostatnio oglądane", "Wróć do niedawno otwartych kart", NamedTextColor.WHITE, this::showHistory));
@@ -102,7 +102,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
                         .pause(false)
                         .afterAction(DialogBase.DialogAfterAction.NONE)
                         .body(List.of(DialogBody.plainMessage(homeIntro(), CONTENT_WIDTH)))
-                        .inputs(List.of(DialogInput.text("query", Component.text("WPISZ NAZWĘ PRZEDMIOTU", NamedTextColor.GOLD))
+                        .inputs(List.of(DialogInput.text("query", Component.text("WPISZ TYTUŁ ARTYKUŁU", NamedTextColor.GOLD))
                                 .width(CONTENT_WIDTH).maxLength(80).build()))
                         .build())
                 .type(DialogType.multiAction(actions).columns(2).build()));
@@ -122,22 +122,24 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         }
         int wikiOnly = index.unmapped(catalog).size();
         if (wikiOnly > 0) {
-            actions.add(action("Strony z Wiki  ·  " + wikiOnly,
-                    "Artykuły, które nie mają jeszcze pewnego ID itemu", NamedTextColor.AQUA,
+            actions.add(action("Przedmioty z Wiki  ·  " + wikiOnly,
+                    "Przedmioty bez przypisanego modelu w Księdze", NamedTextColor.AQUA,
                     target -> showWikiPages(target, 0)));
         }
+        int other = index.otherArticles(catalog).size();
+        actions.add(action("Inne artykuły  ·  " + other, "Poradniki, mechaniki i pozostałe hasła Wiki", NamedTextColor.GREEN,
+                target -> showWikiPages(target, 0, true)));
         actions.add(action("← Do księgi", "Wróć na stronę główną", NamedTextColor.GOLD, this::showHome));
         showMenu(player, "Ścieżki księgi", Component.text("WYBIERZ DZIAŁ", NamedTextColor.GOLD, TextDecoration.BOLD)
-                .append(Component.text("\n" + catalog.size() + " przedmiotów  •  6 działów", NamedTextColor.AQUA)), actions);
+                .append(Component.text("\n" + index.allTitles(catalog).size() + " artykułów  •  " + categoryCount() + " działów", NamedTextColor.AQUA)), actions);
     }
 
     private void showWikiPages(Player player, int requestedPage) {
-        rememberOrigin(player, target -> showWikiPages(target, requestedPage));
-        List<String> titles = index.unmapped(catalog);
-        if (titles.isEmpty()) {
-            showCategories(player);
-            return;
-        }
+        showWikiPages(player, requestedPage, false);
+    }
+    private void showWikiPages(Player player, int requestedPage, boolean other) {
+        rememberOrigin(player, target -> showWikiPages(target, requestedPage, other));
+        List<String> titles = other ? index.otherArticles(catalog) : index.unmapped(catalog);
         int lastPage = Math.max(0, (titles.size() - 1) / PAGE_SIZE);
         int page = Math.clamp(requestedPage, 0, lastPage);
         List<ActionButton> actions = new ArrayList<>();
@@ -150,13 +152,14 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         }
         actions.add(action("← Wszystkie działy", "Wróć do działów", NamedTextColor.GRAY, this::showCategories));
         if (page < lastPage) actions.add(action("Następna →", "Następna strona", NamedTextColor.GOLD,
-                target -> showWikiPages(target, page + 1)));
+                target -> showWikiPages(target, page + 1, other)));
         if (page > 0) actions.add(action("← Poprzednia", "Poprzednia strona", NamedTextColor.GRAY,
-                target -> showWikiPages(target, page - 1)));
+                target -> showWikiPages(target, page - 1, other)));
         Component intro = Component.text("ODKRYTE NA WIKI", NamedTextColor.GOLD, TextDecoration.BOLD)
                 .append(Component.text("\n" + titles.size() + " stron  •  strona " + (page + 1)
                         + " z " + (lastPage + 1), NamedTextColor.GRAY));
-        showMenu(player, "Strony z Wiki", intro, actions);
+        showMenu(player, other ? "Inne artykuły" : "Przedmioty z Wiki", titles.isEmpty()
+                ? Component.text("Brak artykułów w tym dziale. Indeks Wiki może się jeszcze synchronizować.", NamedTextColor.GRAY) : intro, actions);
     }
 
     private void openWikiTitle(Player player, String title) {
@@ -292,8 +295,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
             return;
         }
         rememberOrigin(player, this::showHome);
-        List<String> titles = new ArrayList<>(catalog.titles());
-        titles.addAll(index.titles());
+        List<String> titles = index.allTitles(catalog);
         WikiSearch.Results results = WikiSearch.find(query, titles);
         if (!results.approximate() && !results.titles().isEmpty()
                 && (results.titles().size() == 1 || WikiCatalog.normalize(results.titles().getFirst()).equals(WikiCatalog.normalize(query)))) {
@@ -318,7 +320,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         String summary = results.titles().isEmpty() ? "Brak wyniku w księdze. Sprawdź pisownię lub całą Wiki."
                 : (results.approximate() ? "Czy chodziło Ci o…?" : results.titles().size() + " pasujących kart")
                     + " • strona " + (page + 1) + "/" + (lastPage + 1);
-        showMenu(player, "Wyniki wyszukiwania", Component.text(query, NamedTextColor.GOLD)
+        showMenu(player, results.titles().isEmpty() ? "Nie znaleziono artykułu" : "Wyniki wyszukiwania", Component.text(query, NamedTextColor.GOLD)
                 .append(Component.text("\n" + summary, NamedTextColor.WHITE)), actions);
     }
 
@@ -370,7 +372,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
                         plugin.getLogger().warning("Wiki: " + entry.title() + ": " + failure);
                         if (WikiArticleService.isMissingArticle(failure)) {
                             showError(player, "Artykuł jeszcze nie istnieje",
-                                    "Na Wiki nie ma jeszcze strony „" + entry.title() + "”. To nie jest błąd połączenia.");
+                                    "Na Wiki nie ma jeszcze strony „" + entry.title() + "”.");
                         } else showError(player, "Nie udało się pobrać artykułu",
                                 "Wiki chwilowo nie odpowiada lub jest zbyt wiele zapytań. Spróbuj ponownie za chwilę.");
                     }
@@ -413,7 +415,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
                 target -> showArticle(target, entry, icon, article, page + 1, acquisitionOnly)));
         boolean favorite = favoriteTitles.getOrDefault(player.getUniqueId(), List.of()).stream()
                 .anyMatch(title -> WikiFavorites.sameTitle(title, article.title()));
-        actions.add(action(favorite ? "★ Usuń z ulubionych" : "★ Dodaj do ulubionych", "Zapisz przedmiot na swojej liście celów", NamedTextColor.GOLD,
+        actions.add(action(favorite ? "★ Usuń z ulubionych" : "★ Dodaj do ulubionych", "Zapisz artykuł na swojej liście", NamedTextColor.GOLD,
                 target -> storageAction(target, favorites.toggle(target.getUniqueId(), article.title()), change -> {
                     if (change == WikiFavorites.Change.LIMIT_REACHED) target.sendMessage(Component.text(
                             "Lista mieści maksymalnie " + WikiFavorites.LIMIT + " kart. Usuń jedną, aby dodać kolejną.", NamedTextColor.YELLOW));
@@ -457,7 +459,7 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         List<ActionButton> actions = new ArrayList<>();
         links.stream().skip((long) page * PAGE_SIZE).limit(PAGE_SIZE).forEach(link -> {
             if (link.targetTitle() != null) actions.add(action(shortLabel(link.targetTitle()), link.label(),
-                    article.missingTitles().contains(WikiCatalog.normalize(link.targetTitle())) ? NamedTextColor.RED : NamedTextColor.AQUA,
+                    article.missingTitles().contains(WikiCatalog.titleKey(link.targetTitle())) ? NamedTextColor.RED : NamedTextColor.AQUA,
                     target -> navigate(target, article.title(), link.targetTitle())));
             else actions.add(button(shortLabel(link.label()) + " ↗", "Otwórz stronę: " + link.url(),
                     ClickEvent.openUrl(link.url()), NamedTextColor.AQUA));
@@ -560,13 +562,14 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
     }
 
     private Component homeIntro() {
-        return Component.text("KSIĘGA PRZEDMIOTÓW", NamedTextColor.GOLD, TextDecoration.BOLD)
-                .append(Component.text("\n" + catalog.size() + " przedmiotów  •  6 działów", NamedTextColor.AQUA))
-                .append(Component.text("\nWyszukaj item lub wybierz ścieżkę poniżej.", NamedTextColor.GRAY));
+        return Component.text("KSIĘGA WIKI LAINY", NamedTextColor.GOLD, TextDecoration.BOLD)
+                .append(Component.text("\n" + index.allTitles(catalog).size() + " artykułów  •  " + categoryCount() + " działów", NamedTextColor.AQUA))
+                .append(Component.text("\nWyszukaj artykuł lub wybierz dział poniżej.", NamedTextColor.GRAY));
     }
+    private int categoryCount() { return WikiCategory.values().length + 1 + (index.unmapped(catalog).isEmpty() ? 0 : 1); }
 
     private Component articleIntro(int page, int totalPages) {
-        return Component.text("KARTA PRZEDMIOTU", palette.color("accent", NamedTextColor.AQUA), TextDecoration.BOLD)
+        return Component.text("ARTYKUŁ Z WIKI", palette.color("accent", NamedTextColor.AQUA), TextDecoration.BOLD)
                 .append(Component.text("\nOpis z Wiki Laina.pl  •  " + page + "/" + totalPages, NamedTextColor.GRAY));
     }
 
@@ -625,18 +628,25 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
     static Component linkedText(WikiRichText text, Function<WikiArticleService.WikiLink, ClickEvent> action,
                                 java.util.Set<String> missing, WikiPalette palette) {
         Component result = Component.empty();
-        int cursor = 0;
-        for (var span : text.links()) {
-            if (span.start() > cursor) result = result.append(Component.text(text.text().substring(cursor, span.start()), palette.color("text", NamedTextColor.WHITE)));
-            boolean absent = span.link().targetTitle() != null && missing.contains(WikiCatalog.normalize(span.link().targetTitle()));
-            result = result.append(Component.text(text.text().substring(span.start(), span.end()),
-                            absent ? palette.color("missing-link", NamedTextColor.RED)
-                                    : palette.color(span.author() ? "author-link" : "link", span.author() ? NamedTextColor.AQUA : LINK_COLOR), TextDecoration.UNDERLINED)
-                    .clickEvent(action.apply(span.link()))
-                    .hoverEvent(Component.text(absent ? "Ten artykuł jeszcze nie istnieje" : "Otwórz: " + span.link().label())));
-            cursor = span.end();
+        var boundaries = new java.util.TreeSet<Integer>();
+        boundaries.add(0); boundaries.add(text.text().length());
+        text.links().forEach(span -> { boundaries.add(span.start()); boundaries.add(span.end()); });
+        text.formats().forEach(span -> { boundaries.add(span.start()); boundaries.add(span.end()); });
+        var positions = new ArrayList<>(boundaries);
+        for (int index = 0; index + 1 < positions.size(); index++) {
+            int start = positions.get(index), end = positions.get(index + 1);
+            var link = text.links().stream().filter(span -> span.start() <= start && span.end() >= end).findFirst().orElse(null);
+            Component part = Component.text(text.text().substring(start, end), palette.color("text", NamedTextColor.WHITE));
+            if (link != null) {
+                boolean absent = link.link().targetTitle() != null && missing.contains(WikiCatalog.titleKey(link.link().targetTitle()));
+                part = part.color(absent ? palette.color("missing-link", NamedTextColor.RED)
+                        : palette.color(link.author() ? "author-link" : "link", link.author() ? NamedTextColor.AQUA : LINK_COLOR))
+                        .decorate(TextDecoration.UNDERLINED).clickEvent(action.apply(link.link()))
+                        .hoverEvent(Component.text(absent ? "Ten artykuł jeszcze nie istnieje" : "Otwórz: " + link.link().label()));
+            }
+            for (var span : text.formats()) if (span.start() <= start && span.end() >= end) part = part.decorate(span.decoration());
+            result = result.append(part);
         }
-        if (cursor < text.text().length()) result = result.append(Component.text(text.text().substring(cursor), palette.color("text", NamedTextColor.WHITE)));
         return result;
     }
 

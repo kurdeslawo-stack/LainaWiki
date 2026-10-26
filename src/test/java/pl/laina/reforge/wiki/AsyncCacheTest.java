@@ -8,6 +8,23 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.*;
 
 class AsyncCacheTest {
+    @Test void deletedPageInvalidatesOldCopyIncludingDuringFailureBackoff() throws Exception {
+        var clock = new AtomicLong();
+        var deleted = new java.util.concurrent.atomic.AtomicBoolean();
+        try (var cache = new AsyncCache<String>(key -> {
+            if(deleted.get()) throw new WikiArticleService.MissingArticleException(key);
+            return "stara treść";
+        },10,2,clock::get,failure -> !WikiArticleService.isMissingArticle(failure))) {
+            assertEquals("stara treść",cache.load("Page").get().value());
+            deleted.set(true);clock.set(11);
+            for(int attempt=0;attempt<2;attempt++) {
+                var failure=assertThrows(ExecutionException.class,()->cache.load("Page").get(3,TimeUnit.SECONDS));
+                assertTrue(WikiArticleService.isMissingArticle(failure));
+            }
+            deleted.set(false);clock.set(30012);
+            assertFalse(cache.load("Page").get().stale());
+        }
+    }
     @Test
     void repeatedColdFailuresBackOffThenRecover() throws Exception {
         AtomicLong time = new AtomicLong();
