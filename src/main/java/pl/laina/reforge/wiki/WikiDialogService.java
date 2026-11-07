@@ -34,6 +34,10 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
     // Native dialog items render at 16px; width/height only reserve layout space.
     private static final int ICON_SIZE = 16;
     private static final int PAGE_SIZE = 6;
+    private static final String WIKI_ITEMS_TITLE = "Przedmioty z Wiki";
+    private static final String WIKI_ITEMS_DESCRIPTION = "Przedmioty opisane na Wiki, których nie ma w katalogu Księgi";
+    private static final String OTHER_ARTICLES_TITLE = "Inne artykuły";
+    private static final String OTHER_ARTICLES_DESCRIPTION = "Poradniki, mechaniki i pozostałe hasła Wiki";
     private static final int ARTICLE_PAGE_LENGTH = 1250;
     static final TextColor LINK_COLOR = TextColor.color(0xA8C7DC);
 
@@ -122,12 +126,13 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
         }
         int wikiOnly = index.unmapped(catalog).size();
         if (wikiOnly > 0) {
-            actions.add(action("Przedmioty z Wiki  ·  " + wikiOnly,
-                    "Przedmioty bez przypisanego modelu w Księdze", NamedTextColor.AQUA,
+            actions.add(action(WIKI_ITEMS_TITLE + "  ·  " + wikiOnly,
+                    WIKI_ITEMS_DESCRIPTION, NamedTextColor.AQUA,
                     target -> showWikiPages(target, 0)));
         }
         int other = index.otherArticles(catalog).size();
-        actions.add(action("Inne artykuły  ·  " + other, "Poradniki, mechaniki i pozostałe hasła Wiki", NamedTextColor.GREEN,
+        actions.add(action(OTHER_ARTICLES_TITLE + "  ·  " + other,
+                OTHER_ARTICLES_DESCRIPTION, NamedTextColor.GREEN,
                 target -> showWikiPages(target, 0, true)));
         actions.add(action("← Do księgi", "Wróć na stronę główną", NamedTextColor.GOLD, this::showHome));
         showMenu(player, "Ścieżki księgi", Component.text("WYBIERZ DZIAŁ", NamedTextColor.GOLD, TextDecoration.BOLD)
@@ -155,11 +160,17 @@ public final class WikiDialogService implements org.bukkit.event.Listener {
                 target -> showWikiPages(target, page + 1, other)));
         if (page > 0) actions.add(action("← Poprzednia", "Poprzednia strona", NamedTextColor.GRAY,
                 target -> showWikiPages(target, page - 1, other)));
-        Component intro = Component.text("ODKRYTE NA WIKI", NamedTextColor.GOLD, TextDecoration.BOLD)
-                .append(Component.text("\n" + titles.size() + " stron  •  strona " + (page + 1)
-                        + " z " + (lastPage + 1), NamedTextColor.GRAY));
-        showMenu(player, other ? "Inne artykuły" : "Przedmioty z Wiki", titles.isEmpty()
-                ? Component.text("Brak artykułów w tym dziale. Indeks Wiki może się jeszcze synchronizować.", NamedTextColor.GRAY) : intro, actions);
+        String title = other ? OTHER_ARTICLES_TITLE : WIKI_ITEMS_TITLE;
+        String description = other ? OTHER_ARTICLES_DESCRIPTION : WIKI_ITEMS_DESCRIPTION;
+        Component details = titles.isEmpty()
+                ? Component.text("Brak artykułów w tym dziale. Indeks Wiki może się jeszcze synchronizować.", NamedTextColor.GRAY)
+                : Component.text(titles.size() + " stron  •  strona " + (page + 1)
+                        + " z " + (lastPage + 1), NamedTextColor.GRAY);
+        Component intro = Component.text(title, NamedTextColor.GOLD, TextDecoration.BOLD)
+                .append(Component.text("\n" + description, NamedTextColor.WHITE))
+                .append(Component.newline())
+                .append(details);
+        showMenu(player, title, intro, actions);
     }
 
     private void openWikiTitle(Player player, String title) {
